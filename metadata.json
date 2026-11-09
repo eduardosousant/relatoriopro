@@ -1,0 +1,6 @@
+{
+  "name": "RelatorPRO",
+  "description": "Sistema operacional offline-first para emissão de relatórios técnicos de serviços em campo (perfuração de poços artesianos, sondagens e obras civis) com corte fotográfico 1:1, assinatura digital e exportação PDF A4.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

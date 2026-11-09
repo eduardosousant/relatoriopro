@@ -1,0 +1,6 @@
+{
+  "summary": "Plano de implementação arquitetural e de experiência do usuário para o RelatorPRO, cobrindo emissão de relatórios técnicos em campo, persistência offline em IndexedDB, editor de recorte 1:1 em Canvas, coleta de assinaturas digitais, parâmetros hidrogeológicos/bombas e exportação direta de PDF A4 via jsPDF.",
+  "updatedAt": "2026-11-04T14:00:54.444108703Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
