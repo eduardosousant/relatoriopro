@@ -12,6 +12,7 @@ import {
   MathFormulaBlock,
   construirEquacoesLivroRelatorio,
 } from './MathFormulaBlock';
+import { PocoLocationMap } from './PocoLocationMap';
 import {
   FileDown,
   Printer,
@@ -35,63 +36,57 @@ export interface SecaoConfigItem {
 
 export const SECOES_CONFIG_RELATORIO: SecaoConfigItem[] = [
   {
-    key: 'informacoesGerais',
-    numero: '1',
-    titulo: 'Identificação do Serviço',
-    descricao: 'Nº da OS, Contrato, Data, Responsável Técnico e Status da Obra.',
-  },
-  {
     key: 'clienteLocal',
-    numero: '2',
+    numero: '3',
     titulo: 'Cliente e Local',
-    descricao: 'Dados cadastrais do cliente, endereço e coordenadas geográficas / UTM.',
+    descricao: 'Endereço da obra e coordenadas geográficas / UTM.',
   },
   {
     key: 'informacoesPoco',
-    numero: '3',
+    numero: '4',
     titulo: 'Informações do Poço',
-    descricao: 'Profundidade, níveis (NE/ND), diâmetro, vazão de ensaio e perfil litológico.',
+    descricao: 'Profundidade, níveis (NE/ND), diâmetro, vazão de ensaio e bomba.',
   },
   {
     key: 'desenhoConstrutivo',
-    numero: '4',
+    numero: '5',
     titulo: 'Desenho Construtivo / Perfil Técnico do Poço',
     descricao: 'Casing Ø 6", cimentação sanitária (0-24m), laje de proteção e submergência da bomba.',
     destaque: true,
   },
   {
     key: 'servicosExecutados',
-    numero: '5',
+    numero: '6',
     titulo: 'Serviços Técnicos Executados',
     descricao: 'Memorial descritivo, etapas conduzidas, equipe técnica mobilizada e materiais aplicados.',
   },
   {
     key: 'parecerHidrogeologico',
-    numero: '6',
+    numero: '7',
     titulo: 'Parecer Hidrogeológico e Vazão Recomendada',
     descricao: 'Cálculos de Cooper-Jacob, rebaixamento, recuperação e formulação matemática.',
   },
   {
     key: 'checklist',
-    numero: '7',
+    numero: '8',
     titulo: 'Checklist de Conformidade e Segurança',
     descricao: 'Verificação dos itens normativos de segurança, sanitários e elétricos em campo.',
   },
   {
     key: 'recomendacoes',
-    numero: '8',
+    numero: '9',
     titulo: 'Recomendações Operacionais e Manutenção',
     descricao: 'Diretrizes preventivas, periodicidade de análises e observações gerais.',
   },
   {
     key: 'fotos',
-    numero: '9',
+    numero: '10',
     titulo: 'Registro Fotográfico de Evidências',
     descricao: 'Mosaico de fotos das etapas, motobomba, painel elétrico e cavalete.',
   },
   {
     key: 'assinaturas',
-    numero: '10',
+    numero: '11',
     titulo: 'Termo de Encerramento e Assinaturas',
     descricao: 'Assinatura digital e declaração técnica do responsável técnico e cliente.',
   },
@@ -240,24 +235,27 @@ const RodapePadrao: React.FC<{
   relatorio: RelatorioTecnico;
   isFolhaDeRosto?: boolean;
   etiquetaPagina?: string;
-}> = ({ relatorio, isFolhaDeRosto = false, etiquetaPagina }) => (
-  <div className="mt-6 pt-2 border-t border-[#DDE3EC] text-center text-[7.3pt] text-[#6B7A8D]">
-    {valOuPreencher(
-      relatorio.cabecalho.razaoSocial,
-      CONFIG_LAYOUT_PDF_A4.cabecalho.razaoSocialPadrao
-    )}{' '}
-    | {CONFIG_LAYOUT_PDF_A4.rodape.cidadeSedePadrao} |{' '}
-    {CONFIG_LAYOUT_PDF_A4.rodape.normasTecnicasPadrao} |{' '}
-    {isFolhaDeRosto &&
-    !CONFIG_LAYOUT_PDF_A4.rodape.exibirNumeracaoNaFolhaDeRosto
-      ? 'Folha de Rosto Institucional (ABNT NBR 10719)'
+}> = ({ relatorio, isFolhaDeRosto = false, etiquetaPagina }) => {
+  const empresa = valOuPreencher(
+    relatorio.cabecalho.razaoSocial,
+    CONFIG_LAYOUT_PDF_A4.cabecalho.razaoSocialPadrao
+  );
+
+  const sufixo =
+    isFolhaDeRosto && !CONFIG_LAYOUT_PDF_A4.rodape.exibirNumeracaoNaFolhaDeRosto
+      ? ''
       : etiquetaPagina ||
         `Relatório Técnico — ${valOuPreencher(
           relatorio.cabecalho.contratoOS,
           'OS-2026-0842'
-        )}`}
-  </div>
-);
+        )}`;
+
+  return (
+    <div className="mt-6 pt-2 border-t border-[#DDE3EC] text-center text-[7.3pt] text-[#6B7A8D]">
+      {sufixo ? `${empresa} | ${sufixo}` : empresa}
+    </div>
+  );
+};
 
 export const A4Preview: React.FC<A4PreviewProps> = ({
   relatorio,
@@ -380,16 +378,29 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
   const precisaEscala = escalaCalculada < 0.98;
 
   const nomeRespTecnico = valOuPreencher(
-    relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoNome ||
+    relatorio.cabecalho.responsavelTecnicoNome ||
+      relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoNome ||
       relatorio.assinaturaResponsavel?.nomeSignatario,
     'José Roberto Ribeiro'
   );
   const creaRespTecnico = valOuPreencher(
-    relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoCREA ||
+    relatorio.cabecalho.responsavelTecnicoCREA ||
+      relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoCREA ||
       relatorio.assinaturaResponsavel?.documento,
     'DADO A PREENCHER EM CAMPO'
   );
-  const respTecnicoFormatado = `Responsável Técnico: [${nomeRespTecnico}, CREA: ${creaRespTecnico}]`;
+  const respTecnicoFormatado = `${nomeRespTecnico}, CREA: ${creaRespTecnico}`;
+
+  const nomeRespElaboracao = valOuPreencher(
+    relatorio.cabecalho.responsavelElaboracaoNome ||
+      relatorio.assinaturaCliente?.nomeSignatario,
+    'Departamento Técnico de Hidrogeologia'
+  );
+  const cargoRespElaboracao = valOuPreencher(
+    relatorio.cabecalho.responsavelElaboracaoCargo ||
+      relatorio.assinaturaCliente?.funcao,
+    'Responsável pela Elaboração do Relatório Técnico'
+  );
 
   const desenhoConstrutivoTexto = valOuPreencher(
     relatorio.dadosPoco?.desenhoConstrutivo,
@@ -463,7 +474,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
             className="px-4 py-2 text-xs font-bold rounded-lg bg-[#E8A020] hover:bg-[#F5B93A] disabled:opacity-60 text-[#1B2A3B] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 shadow-sm"
           >
             <FileDown className="w-4 h-4" />
-            <span>{exportandoPdf ? 'Gerando PDF...' : 'Exportar PDF'}</span>
+            <span>{exportandoPdf ? 'Gerando PDF...' : 'PDF'}</span>
           </button>
         </div>
       </div>
@@ -591,8 +602,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
           </div>
         </div>
       )}
-
-      {/* Folhas A4 Físicas Simuladas */}
+{/* Folhas A4 Físicas Simuladas */}
       <div
         ref={containerRef}
         className={`space-y-6 sm:space-y-8 pb-8 ${
@@ -600,18 +610,18 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
         }`}
       >
         {/* =====================================================================
-            PÁGINA 1: FOLHA DE ROSTO CORPORATIVA E ABNT (SEPARADA DO CORPO TÉCNICO)
+            PÁGINA 1: IDENTIFICAÇÃO, DADOS CONTRATUAIS, LOCAL E INFORMAÇÕES DO POÇO (SEÇÕES 1 A 4)
            ===================================================================== */}
         <A4SheetScaled scale={escalaEfetiva}>
           <div className="space-y-3.5">
             <TimbreHeaderPadrao relatorio={relatorio} />
 
-            {/* Moldura Principal do Título da Folha de Rosto */}
-            <div className="bg-[#1B2A3B] text-white border-l-[4mm] border-[#E8A020] px-5 py-4 text-center space-y-1">
-              <div className="text-[13.5pt] font-extrabold tracking-wide uppercase">
+            {/* Moldura Principal do Título */}
+            <div className="bg-[#1B2A3B] text-white border-l-[4mm] border-[#E8A020] px-5 py-3 text-center space-y-1">
+              <div className="text-[12.5pt] font-extrabold tracking-wide uppercase">
                 RELATÓRIO TÉCNICO DE ENTREGA DE SERVIÇOS
               </div>
-              <div className="text-[9.5pt] font-mono font-semibold text-slate-200">
+              <div className="text-[9pt] font-mono font-semibold text-slate-200">
                 POÇO TUBULAR PROFUNDO (
                 {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')}) • ORDEM DE
                 SERVIÇO:{' '}
@@ -624,8 +634,8 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
 
             {/* Quadro 1: Contratante / Interessado (Ao) */}
             <div>
-              <div className="bg-[#1B2A3B] text-white text-[7.8pt] font-bold uppercase px-3 py-1.5">
-                1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO (AO)
+              <div>
+               <SectionBar titulo="1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO (AO)"/>
               </div>
               <table className="w-full text-[8pt] border border-[#DDE3EC] border-collapse">
                 <tbody>
@@ -677,79 +687,21 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </table>
             </div>
 
-            {/* Quadro 2: Empresa Responsável pela Execução */}
+            {/* Quadro 2: Dados Contratuais, Responsável Técnico e Normas ABNT */}
             <div>
-              <div className="bg-[#1B2A3B] text-white text-[7.8pt] font-bold uppercase px-3 py-1.5">
-                2. EMPRESA RESPONSÁVEL PELA EXECUÇÃO (CONTRATADA)
+              <div>
+                <SectionBar titulo="2. DADOS CONTRATUAIS, RESPONSÁVEL TÉCNICO E NORMAS APLICADAS"/>
               </div>
               <table className="w-full text-[8pt] border border-[#DDE3EC] border-collapse">
                 <tbody>
                   <tr className="bg-white border-b border-[#DDE3EC]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-36">
-                      Razão Social
-                    </td>
-                    <td className="py-1.5 px-2.5 font-bold" colSpan={3}>
-                      {valOuPreencher(
-                        relatorio.cabecalho.razaoSocial,
-                        CONFIG_LAYOUT_PDF_A4.cabecalho.razaoSocialPadrao
-                      )}
-                    </td>
-                  </tr>
-                  <tr className="bg-[#F5F7FA] border-b border-[#DDE3EC]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      CNPJ
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono">
-                      {valOuPreencher(
-                        relatorio.cabecalho.cnpj,
-                        CONFIG_LAYOUT_PDF_A4.cabecalho.cnpjPadrao
-                      )}
-                    </td>
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-36">
-                      E-mail
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono">
-                      {valOuPreencher(
-                        relatorio.cabecalho.emailEmpresa,
-                        CONFIG_LAYOUT_PDF_A4.cabecalho.emailPadrao
-                      )}
-                    </td>
-                  </tr>
-                  <tr className="bg-white">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Endereço e Contato
-                    </td>
-                    <td className="py-1.5 px-2.5" colSpan={3}>
-                      {valOuPreencher(
-                        relatorio.cabecalho.enderecoEmpresa,
-                        CONFIG_LAYOUT_PDF_A4.cabecalho.enderecoPadrao
-                      )}{' '}
-                      —{' '}
-                      {valOuPreencher(
-                        relatorio.cabecalho.cidadeContatoEmpresa,
-                        CONFIG_LAYOUT_PDF_A4.cabecalho.cidadeContatoPadrao
-                      )}
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            {/* Quadro 3: Dados Contratuais, Responsável Técnico e Normas ABNT */}
-            <div>
-              <div className="bg-[#1B2A3B] text-white text-[7.8pt] font-bold uppercase px-3 py-1.5">
-                3. DADOS CONTRATUAIS, RESPONSÁVEL TÉCNICO E NORMAS APLICADAS
-              </div>
-              <table className="w-full text-[8pt] border border-[#DDE3EC] border-collapse">
-                <tbody>
-                  <tr className="bg-white border-b border-[#DDE3EC]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-20">
+                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-24">
                       Ordem de Serviço
                     </td>
                     <td className="py-1.5 px-2.5 font-mono font-bold">
                       {valOuPreencher(relatorio.cabecalho.contratoOS)}
                     </td>
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-10">
+                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-20">
                       Contrato
                     </td>
                     <td className="py-1.5 px-2.5 font-mono">
@@ -758,13 +710,27 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                   </tr>
                   <tr className="bg-[#F5F7FA] border-b border-[#DDE3EC]">
                     <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Serviço
+                      Data da Execução
                     </td>
-                    <td className="py-1.5 px-2.5" colSpan={3}>
-                      {valOuPreencher(relatorio.cabecalho.tipoServico)}
+                    <td className="py-1.5 px-2.5 font-mono">
+                      {formatarDataBR(relatorio.cabecalho.dataExecucao)}
+                    </td>
+                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
+                      Status
+                    </td>
+                    <td className="py-1.5 px-2.5 font-bold text-[#27AE60]">
+                      {valOuPreencher(relatorio.cabecalho.statusOS, 'Concluído')}
                     </td>
                   </tr>
                   <tr className="bg-white border-b border-[#DDE3EC]">
+                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
+                      Tipo de Serviço
+                    </td>
+                    <td className="py-1.5 px-2.5 font-medium" colSpan={3}>
+                      {valOuPreencher(relatorio.cabecalho.tipoServico)}
+                    </td>
+                  </tr>
+                  <tr className="bg-[#F5F7FA] border-b border-[#DDE3EC]">
                     <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
                       Responsável Técnico
                     </td>
@@ -776,7 +742,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                       CREA: {creaRespTecnico}
                     </td>
                   </tr>
-                  <tr className="bg-[#F5F7FA]">
+                  <tr className="bg-white">
                     <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
                       Normas Aplicadas
                     </td>
@@ -790,157 +756,12 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </table>
             </div>
 
-            {/* Quadro 4: Síntese Executiva do Poço e Equipamento */}
-            <div>
-              <div className="bg-[#1B2A3B] text-white text-[7.8pt] font-bold uppercase px-3 py-1.5">
-                4. SÍNTESE EXECUTIVA DO POÇO E CONDIÇÕES OPERACIONAIS UNIFICADAS
-              </div>
-              <table className="w-full text-[8pt] border border-[#DDE3EC] border-collapse">
-                <tbody>
-                  <tr className="bg-white border-b border-[#DDE3EC]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-36">
-                      Identificação (TAG)
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono font-bold">
-                      {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')}
-                    </td>
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt] w-36">
-                      Profundidade Total
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono">
-                      {valOuPreencher(relatorio.dadosPoco?.profundidadeTotal, '160,00 m')}
-                    </td>
-                  </tr>
-                  <tr className="bg-[#F5F7FA] border-b border-[#DDE3EC]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Nível Estático (NE)
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono">
-                      {valOuPreencher(relatorio.dadosPoco?.nivelEstatico, '22,40 m')}
-                    </td>
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Nível Dinâmico (ND)
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono">
-                      {valOuPreencher(relatorio.dadosPoco?.nivelDinamico, '64,10 m')}
-                    </td>
-                  </tr>
-                  <tr className="bg-white border-b border-[#DDE3EC]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Vazão Recomendada
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono font-bold text-[#27AE60]">
-                      {valOuPreencher(relatorio.dadosPoco?.vazaoTeste, '10,29 m³/h')}
-                    </td>
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Prof. Inst. Bomba
-                    </td>
-                    <td className="py-1.5 px-2.5 font-mono font-bold">
-                      {valOuPreencher(relatorio.dadosPoco?.profundidadeBomba, '84,00 m')}
-                    </td>
-                  </tr>
-                  <tr className="bg-[#F5F7FA]">
-                    <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
-                      Equipamento Bomba
-                    </td>
-                    <td className="py-1.5 px-2.5" colSpan={3}>
-                      {valOuPreencher(relatorio.dadosPoco?.especificacaoBomba)} (
-                      {valOuPreencher(
-                        relatorio.dadosPoco?.motobombaEstado,
-                        'Novo'
-                      ).toUpperCase()}
-                      )
-                    </td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-          </div>
-
-          <RodapePadrao relatorio={relatorio} isFolhaDeRosto />
-        </A4SheetScaled>
-
-        {/* =====================================================================
-            PÁGINA 2+: CORPO TÉCNICO DO RELATÓRIO (SEPARADO DA FOLHA DE ROSTO)
-           ===================================================================== */}
-        <A4SheetScaled scale={escalaEfetiva} printBreakBefore>
-          <div className="space-y-4">
-            {/* Timbre Institucional Padrão */}
-            <TimbreHeaderPadrao relatorio={relatorio} />
-
-            {/* 1. IDENTIFICAÇÃO DO SERVIÇO */}
-            {isSecaoAtiva('informacoesGerais') && (
-              <div>
-                <SectionBar titulo="1. IDENTIFICAÇÃO DO SERVIÇO" />
-                <div className="text-[8.5pt] divide-y divide-slate-100 border border-[#DDE3EC]">
-                  <div className="grid grid-cols-2 bg-[#F5F7FA] px-3 py-1.5">
-                    <div className="flex justify-between pr-4">
-                      <span className="font-bold uppercase text-[#6B7A8D] text-[7.5pt]">
-                        Nº DA OS
-                      </span>
-                      <span className="font-mono font-semibold">
-                        {valOuPreencher(relatorio.cabecalho.contratoOS)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between pl-4">
-                      <span className="font-bold uppercase text-[#6B7A8D] text-[7.5pt]">
-                        CONTRATO / REF
-                      </span>
-                      <span className="font-mono font-semibold">
-                        {valOuPreencher(relatorio.cabecalho.contratoRef)}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 bg-white px-3 py-1.5">
-                    <div className="flex justify-between pr-4">
-                      <span className="font-bold uppercase text-[#6B7A8D] text-[7.5pt]">
-                        DATA EXECUÇÃO / ENSAIO
-                      </span>
-                      <span className="font-mono">
-                        {formatarDataBR(relatorio.cabecalho.dataExecucao)}
-                      </span>
-                    </div>
-                    <div className="flex justify-between pl-4">
-                      <span className="font-bold uppercase text-[#6B7A8D] text-[7.5pt]">
-                        STATUS FINAL DA OBRA
-                      </span>
-                      <span className="font-bold text-[#27AE60]">
-                        {valOuPreencher(relatorio.cabecalho.statusOS, 'Concluído')}
-                      </span>
-                    </div>
-                  </div>
-                  <div className="bg-[#F5F7FA] px-3 py-1.5 flex justify-between gap-4">
-                    <span className="font-bold uppercase text-[#6B7A8D] text-[7.5pt] shrink-0">
-                      TIPO DE SERVIÇO
-                    </span>
-                    <span className="text-right font-medium">
-                      {valOuPreencher(relatorio.cabecalho.tipoServico)}
-                    </span>
-                  </div>
-                  <div className="bg-white px-3 py-1.5 flex justify-between gap-4">
-                    <span className="font-bold uppercase text-[#6B7A8D] text-[7.5pt] shrink-0">
-                      RESPONSABILIDADE TÉCNICA
-                    </span>
-                    <span className="text-right font-mono font-semibold text-[#1B2A3B]">
-                      {respTecnicoFormatado}
-                    </span>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* 2. CLIENTE E LOCAL */}
+            {/* 3. CLIENTE E LOCAL (MOVIDO PARA A PÁGINA 1) */}
             {isSecaoAtiva('clienteLocal') && (
               <div>
-                <SectionBar titulo="2. CLIENTE E LOCAL" />
+                <SectionBar titulo="3. CLIENTE E LOCAL" />
                 <div className="text-[8.5pt] divide-y divide-slate-100 border border-[#DDE3EC]">
                   {[
-                    [
-                      'Cliente Mandante',
-                      valOuPreencher(relatorio.cabecalho.cliente),
-                      'CNPJ / CPF',
-                      valOuPreencher(relatorio.cabecalho.clienteCNPJ),
-                    ],
                     [
                       'Endereço / Local da Obra',
                       valOuPreencher(relatorio.cabecalho.localizacao),
@@ -958,12 +779,6 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                         relatorio.dadosPoco?.coordenadasUTM,
                         '[DADO A PREENCHER EM CAMPO — Zona 23K / SIRGAS 2000]'
                       ),
-                    ],
-                    [
-                      'Contato Local / Fiscal',
-                      valOuPreencher(relatorio.cabecalho.contatoLocal),
-                      'Telefone de Contato',
-                      valOuPreencher(relatorio.cabecalho.telefoneContato),
                     ],
                   ].map((row, idx) => (
                     <div
@@ -987,13 +802,25 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     </div>
                   ))}
                 </div>
+                <PocoLocationMap
+                  coordenadasGeograficas={
+                    relatorio.dadosPoco?.coordenadasGeograficas ||
+                    relatorio.cabecalho?.coordenadasGeograficas
+                  }
+                  coordenadasUTM={relatorio.dadosPoco?.coordenadasUTM}
+                  pocoTag={relatorio.dadosPoco?.pocoId}
+                  cliente={relatorio.cabecalho?.cliente}
+                  localizacao={relatorio.cabecalho?.localizacao}
+                  cidadeUF={relatorio.cabecalho?.cidadeUF}
+                  variant="a4"
+                />
               </div>
             )}
 
-            {/* 3. INFORMAÇÕES DO POÇO */}
+            {/* 4. INFORMAÇÕES DO POÇO (MOVIDO PARA A PÁGINA 1) */}
             {relatorio.dadosPoco?.incluirNoRelatorio && isSecaoAtiva('informacoesPoco') && (
               <div>
-                <SectionBar titulo="3. INFORMAÇÕES DO POÇO" />
+                <SectionBar titulo="4. INFORMAÇÕES DO POÇO" />
                 <div className="text-[8.5pt] divide-y divide-slate-100 border border-[#DDE3EC]">
                   {[
                     [
@@ -1032,11 +859,8 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     [
                       'Tubo Edutor (Coluna)',
                       valOuPreencher(relatorio.dadosPoco.tuboEdutor),
-                      'Coordenadas Geográficas',
-                      valOuPreencher(
-                        relatorio.dadosPoco.coordenadasGeograficas,
-                        'LAT -21.1767 | LON -47.8208'
-                      ),
+                      'Submergência da Bomba',
+                      '19,90 m acima do ND (Mín. 10,00 m)',
                     ],
                     [
                       'Eletrodo Superior',
@@ -1084,38 +908,39 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                       {valOuPreencher(relatorio.dadosPoco.painelEstado, 'Novo').toUpperCase()})
                     </span>
                   </div>
-                  <div className="bg-[#F5F7FA] px-3 py-1.5">
-                    <span className="block font-bold uppercase text-[#6B7A8D] text-[7.5pt] mb-0.5">
-                      PERFIL LITOLÓGICO E HIDROESTRATIGRÁFICO RESUMIDO
-                    </span>
-                    <p className="text-[8pt] leading-snug text-[#1B2A3B]">
-                      {valOuPreencher(
-                        relatorio.dadosPoco.perfilLitologico,
-                        '0,00 a 18,00 m: Solo argilo-arenoso avermelhado (cobertura cenozóica/alteração de basalto); 18,00 a 112,00 m: Basalto compacto a vesicular fraturado (Formação Serra Geral — entradas d’água em zonas de fraturamento); 112,00 a 160,00 m: Arenito fino a médio rosado, bem selecionado e silicificado no topo (Sistema Aquífero Guarani / Formação Botucatu).'
-                      )}
-                    </p>
-                  </div>
                 </div>
               </div>
             )}
+          </div>
 
-            {/* 4. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO */}
+          <RodapePadrao relatorio={relatorio} />
+        </A4SheetScaled>
+
+        {/* =====================================================================
+            PÁGINA 2+: CORPO TÉCNICO DETALHADO (A PARTIR DA SEÇÃO 5)
+           ===================================================================== */}
+        <A4SheetScaled scale={escalaEfetiva} printBreakBefore>
+          <div className="space-y-4">
+            {/* Timbre Institucional Padrão */}
+            <TimbreHeaderPadrao relatorio={relatorio} />
+
+            {/* 5. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO */}
             {isSecaoAtiva('desenhoConstrutivo') && (
               <div>
-                <SectionBar titulo="4. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO" />
+                <SectionBar titulo="5. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO" />
                 <div className="border border-[#DDE3EC] bg-[#FAFBFD] px-3 py-2 text-[8.2pt] leading-relaxed whitespace-pre-wrap">
                   {desenhoConstrutivoTexto}
                 </div>
               </div>
             )}
 
-            {/* 5. SERVIÇOS TÉCNICOS EXECUTADOS */}
+            {/* 6. SERVIÇOS TÉCNICOS EXECUTADOS */}
             {isSecaoAtiva('servicosExecutados') && (
               <div>
-                <SectionBar titulo="5. SERVIÇOS TÉCNICOS EXECUTADOS" />
+                <SectionBar titulo="6. SERVIÇOS TÉCNICOS EXECUTADOS" />
                 <div className="mb-2.5">
                   <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                    5.1 Memorial Descritivo das Etapas Executadas (ABNT NBR 12212 / NBR 12244)
+                    6.1 Memorial Descritivo das Etapas Executadas (ABNT NBR 12212 / NBR 12244)
                   </span>
                   <p className="text-[8.2pt] leading-relaxed whitespace-pre-wrap border border-[#DDE3EC] bg-white p-2.5">
                     {valOuPreencher(relatorio.descricaoServico)}
@@ -1125,132 +950,136 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                 {servicosValidos.length > 0 && (
                   <div className="mb-2.5">
                     <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                    5.2 Quadro Quantitativo de Serviços Conduzidos
-                  </span>
-                  <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
-                    <thead>
-                      <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
-                        <th className="py-1 px-2 text-left w-8">#</th>
-                        <th className="py-1 px-2 text-left">
-                          Descrição dos Serviços Conduzidos
-                        </th>
-                        <th className="py-1 px-2 text-left w-20">Qtd</th>
-                        <th className="py-1 px-2 text-left w-28">Status</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {servicosValidos.map((s, i) => (
-                        <tr
-                          key={s.id}
-                          className={i % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'}
-                        >
-                          <td className="py-1 px-2 font-mono">{i + 1}</td>
-                          <td className="py-1 px-2">{valOuPreencher(s.descricao)}</td>
-                          <td className="py-1 px-2 font-mono">
-                            {valOuPreencher(s.quantidade, '1')}
-                          </td>
-                          <td className="py-1 px-2 font-semibold text-[#27AE60]">
-                            {valOuPreencher(s.status, 'Executado')}
-                          </td>
+                      6.2 Quadro Quantitativo de Serviços Conduzidos
+                    </span>
+                    <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
+                      <thead>
+                        <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
+                          <th className="py-1 px-2 text-left w-8">#</th>
+                          <th className="py-1 px-2 text-left">
+                            Descrição dos Serviços Conduzidos
+                          </th>
+                          <th className="py-1 px-2 text-center w-16">Unidade</th>
+                          <th className="py-1 px-2 text-center w-14">Qtd</th>
+                          <th className="py-1 px-2 text-center w-24">Status</th>
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {(equipeValida.length > 0 || materiaisValidos.length > 0) && (
-                <div className="grid grid-cols-1 gap-2.5">
-                  {equipeValida.length > 0 && (
-                    <div>
-                      <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                        5.3 Equipe Técnica Mobilizada
-                      </span>
-                      <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
-                        <thead>
-                          <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
-                            <th className="py-1 px-2 text-left w-8">#</th>
-                            <th className="py-1 px-2 text-left">
-                              Profissional / Especialista
-                            </th>
-                            <th className="py-1 px-2 text-left">
-                              Função / Atribuição em Campo
-                            </th>
+                      </thead>
+                      <tbody>
+                        {servicosValidos.map((s, i) => (
+                          <tr
+                            key={s.id}
+                            className={i % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'}
+                          >
+                            <td className="py-1 px-2 font-mono">{i + 1}</td>
+                            <td className="py-1 px-2">{valOuPreencher(s.descricao)}</td>
+                            <td className="py-1 px-2 text-center font-mono text-[7.5pt]">
+                              {valOuPreencher(s.unidade, 'UN')}
+                            </td>
+                            <td className="py-1 px-2 text-center font-mono">
+                              {valOuPreencher(s.quantidade, '1')}
+                            </td>
+                            <td className="py-1 px-2 text-center font-semibold text-[#27AE60]">
+                              {valOuPreencher(s.status, 'Executado')}
+                            </td>
                           </tr>
-                        </thead>
-                        <tbody>
-                          {equipeValida.map((m, i) => (
-                            <tr
-                              key={m.id}
-                              className={i % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'}
-                            >
-                              <td className="py-1 px-2 font-mono">{i + 1}</td>
-                              <td
-                                className={`py-1 px-2 ${
-                                  i === 0 ? 'font-bold' : 'font-normal'
-                                }`}
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                {(equipeValida.length > 0 || materiaisValidos.length > 0) && (
+                  <div className="grid grid-cols-1 gap-2.5">
+                    {equipeValida.length > 0 && (
+                      <div>
+                        <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
+                          6.3 Equipe Técnica Mobilizada
+                        </span>
+                        <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
+                          <thead>
+                            <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
+                              <th className="py-1 px-2 text-left w-8">#</th>
+                              <th className="py-1 px-2 text-left">
+                                Profissional / Especialista
+                              </th>
+                              <th className="py-1 px-2 text-left">
+                                Função / Atribuição em Campo
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {equipeValida.map((m, i) => (
+                              <tr
+                                key={m.id}
+                                className={i % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'}
                               >
-                                {valOuPreencher(m.nome)}
-                              </td>
-                              <td className="py-1 px-2">{valOuPreencher(m.funcao)}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
+                                <td className="py-1 px-2 font-mono">{i + 1}</td>
+                                <td
+                                  className={`py-1 px-2 ${
+                                    i === 0 ? 'font-bold' : 'font-normal'
+                                  }`}
+                                >
+                                  {valOuPreencher(m.nome)}
+                                </td>
+                                <td className="py-1 px-2">{valOuPreencher(m.funcao)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
 
-                  {materiaisValidos.length > 0 && (
-                    <div>
-                      <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                        5.4 Materiais e Insumos Aplicados no Poço
-                      </span>
-                      <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
-                        <thead>
-                          <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
-                            <th className="py-1 px-2 text-left w-8">#</th>
-                            <th className="py-1 px-2 text-left">
-                              Descrição Técnica do Material
-                            </th>
-                            <th className="py-1 px-2 text-left w-24">Unidade</th>
-                            <th className="py-1 px-2 text-left w-20">Qtd</th>
-                            <th className="py-1 px-2 text-left w-24">Situação</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {materiaisValidos.map((m, i) => (
-                            <tr
-                              key={m.id}
-                              className={i % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'}
-                            >
-                              <td className="py-1 px-2 font-mono">{i + 1}</td>
-                              <td className="py-1 px-2">
-                                {valOuPreencher(m.descricao)}
-                              </td>
-                              <td className="py-1 px-2">
-                                {valOuPreencher(m.unidade, 'Unidade')}
-                              </td>
-                              <td className="py-1 px-2 font-mono">
-                                {valOuPreencher(m.quantidade, '1')}
-                              </td>
-                              <td className="py-1 px-2 font-semibold text-[#1B2A3B]">
-                                {valOuPreencher(m.situacao, 'Aplicado')}
-                              </td>
+                    {materiaisValidos.length > 0 && (
+                      <div>
+                        <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
+                          6.4 Materiais e Insumos Aplicados no Poço
+                        </span>
+                        <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
+                          <thead>
+                            <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
+                              <th className="py-1 px-2 text-left w-8">#</th>
+                              <th className="py-1 px-2 text-left">
+                                Descrição Técnica do Material
+                              </th>
+                              <th className="py-1 px-2 text-left w-24">Unidade</th>
+                              <th className="py-1 px-2 text-left w-20">Qtd</th>
+                              <th className="py-1 px-2 text-left w-24">Situação</th>
                             </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                          </thead>
+                          <tbody>
+                            {materiaisValidos.map((m, i) => (
+                              <tr
+                                key={m.id}
+                                className={i % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'}
+                              >
+                                <td className="py-1 px-2 font-mono">{i + 1}</td>
+                                <td className="py-1 px-2">
+                                  {valOuPreencher(m.descricao)}
+                                </td>
+                                <td className="py-1 px-2">
+                                  {valOuPreencher(m.unidade, 'Unidade')}
+                                </td>
+                                <td className="py-1 px-2 font-mono">
+                                  {valOuPreencher(m.quantidade, '1')}
+                                </td>
+                                <td className="py-1 px-2 font-semibold text-[#1B2A3B]">
+                                  {valOuPreencher(m.situacao, 'Aplicado')}
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
 
-            {/* 6. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO */}
+            {/* 7. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO */}
             {isSecaoAtiva('parecerHidrogeologico') && (
               <div>
-                <SectionBar titulo="6. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO" />
+                <SectionBar titulo="7. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO" />
                 <div className="border border-[#DDE3EC] bg-[#FAFBFD] px-3 py-2 text-[8.2pt] leading-relaxed whitespace-pre-wrap break-words overflow-hidden">
                   {parecerHidrogeologicoTexto}
                 </div>
@@ -1267,10 +1096,10 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </div>
             )}
 
-            {/* 7. CHECKLIST DE CONFORMIDADE E SEGURANÇA */}
+            {/* 8. CHECKLIST DE CONFORMIDADE E SEGURANÇA */}
             {isSecaoAtiva('checklist') && relatorio.checklist && relatorio.checklist.length > 0 && (
               <div>
-                <SectionBar titulo="7. CHECKLIST DE CONFORMIDADE E SEGURANÇA" />
+                <SectionBar titulo="8. CHECKLIST DE CONFORMIDADE E SEGURANÇA" />
                 <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
                   <thead>
                     <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
@@ -1312,14 +1141,14 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </div>
             )}
 
-            {/* 8. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO */}
+            {/* 9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO */}
             {isSecaoAtiva('recomendacoes') && (
               <div>
-                <SectionBar titulo="8. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO" />
+                <SectionBar titulo="9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO" />
                 <div className="space-y-2 text-[8.2pt] border border-[#DDE3EC] bg-white p-3">
                   <div>
                     <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D]">
-                      8.1 Diretrizes de Operação e Manutenção Preventiva
+                      9.1 Diretrizes de Operação e Manutenção Preventiva
                     </span>
                     <p className="whitespace-pre-wrap leading-relaxed">
                       {valOuPreencher(
@@ -1330,7 +1159,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                   </div>
                   <div>
                     <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D]">
-                      8.2 Observações Técnicas e Retificação de Divergências Documentais
+                      9.2 Observações Técnicas e Retificação de Divergências Documentais
                     </span>
                     <p className="whitespace-pre-wrap leading-relaxed">
                       {valOuPreencher(
@@ -1343,10 +1172,10 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </div>
             )}
 
-            {/* 9. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS */}
+            {/* 10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS */}
             {isSecaoAtiva('fotos') && fotosOrdenadas.length > 0 && (
               <div>
-                <SectionBar titulo="9. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS" />
+                <SectionBar titulo="10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS" />
                 <div className="grid grid-cols-2 gap-x-6 gap-y-4 justify-items-center pt-1">
                   {fotosOrdenadas.map((foto, index) => {
                     const temImagemReal = Boolean(
@@ -1392,51 +1221,65 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </div>
             )}
 
-            {/* 10. ASSINATURAS */}
+            {/* 11. ASSINATURAS */}
             {isSecaoAtiva('assinaturas') && (
               <div>
-                <SectionBar titulo="10. ASSINATURAS" />
-                <div className="border border-[#DDE3EC] bg-[#FAFBFD] p-4 text-[8.5pt]">
+                <SectionBar titulo="11. ASSINATURAS" />
+                <div className="border border-[#DDE3EC] bg-[#FAFBFD] p-4 text-[8.5pt] break-inside-avoid">
                   <p className="text-[8pt] text-slate-600 mb-6 text-center">
                     Declaramos que os serviços referentes à{' '}
                     <strong>{valOuPreencher(relatorio.cabecalho.contratoOS)}</strong> no{' '}
                     <strong>Poço {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')}</strong>{' '}
-                    foram integralmente executados e comissionados em conformidade com as
+                    foram integralmente executados, comissionados e documentados em conformidade com as
                     normas técnicas <strong>ABNT NBR 12212 e ABNT NBR 12244</strong>.
                   </p>
                   <div className="grid grid-cols-2 gap-10 pt-4">
-                    <div className="text-center border-t border-[#1B2A3B] pt-2">
-                      <div className="font-bold text-[#1B2A3B]">
-                        {respTecnicoFormatado}
-                      </div>
-                      <div className="text-[7.5pt] text-slate-600 mt-0.5">
-                        Engenheiro Geólogo / Hidrogeólogo Sênior —{' '}
-                        {valOuPreencher(
-                          relatorio.cabecalho.razaoSocial,
-                          'HIDROGEO ENGENHARIA E POÇOS ARTESIANOS LTDA.'
-                        )}
-                      </div>
-                    </div>
-                    <div className="text-center border-t border-[#1B2A3B] pt-2">
-                      <div className="font-bold text-[#1B2A3B]">
-                        Fiscal do Cliente:{' '}
-                        {valOuPreencher(
-                          relatorio.assinaturaCliente?.nomeSignatario,
-                          '[DADO A PREENCHER EM CAMPO — Nome e Assinatura do Fiscal]'
-                        )}
-                      </div>
-                      <div className="text-[7.5pt] text-slate-600 mt-0.5">
-                        {valOuPreencher(
-                          relatorio.assinaturaCliente?.funcao,
-                          'Representante / Fiscal de Engenharia — Agroindustrial Vale do Rio Pardo S/A'
-                        )}
+                    <div className="text-center pt-2 flex flex-col items-center">
+                      {relatorio.assinaturaResponsavel?.dataUrl && (
+                        <img
+                          src={relatorio.assinaturaResponsavel.dataUrl}
+                          alt="Assinatura Responsável Técnico"
+                          className="h-10 object-contain mb-1"
+                        />
+                      )}
+                      <div className="w-full border-t border-[#1B2A3B] pt-2">
+                        <div className="font-bold text-[#1B2A3B]">
+                          {respTecnicoFormatado}
+                        </div>
+                        <div className="text-[7.5pt] text-slate-600 mt-0.5">
+                          Responsável Técnico — Engenheiro Geólogo / Hidrogeólogo
+                        </div>
+                        <div className="text-[7pt] text-slate-500 font-mono">
+                          {valOuPreencher(
+                            relatorio.cabecalho.razaoSocial,
+                            'HIDROGEO ENGENHARIA E POÇOS ARTESIANOS LTDA.'
+                          )}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                  <div className="text-center text-[8pt] font-mono text-slate-600 mt-4 pt-2 border-t border-slate-200">
-                    Local e Data:{' '}
-                    {valOuPreencher(relatorio.cabecalho.cidadeUF, 'Ribeirão Preto - SP')},{' '}
-                    {formatarDataBR(relatorio.cabecalho.dataExecucao)}
+                    <div className="text-center pt-2 flex flex-col items-center">
+                      {relatorio.assinaturaCliente?.dataUrl && (
+                        <img
+                          src={relatorio.assinaturaCliente.dataUrl}
+                          alt="Assinatura Responsável Elaboração"
+                          className="h-10 object-contain mb-1"
+                        />
+                      )}
+                      <div className="w-full border-t border-[#1B2A3B] pt-2">
+                        <div className="font-bold text-[#1B2A3B]">
+                          {nomeRespElaboracao}
+                        </div>
+                        <div className="text-[7.5pt] text-slate-600 mt-0.5">
+                          {cargoRespElaboracao}
+                        </div>
+                        <div className="text-[7pt] text-slate-500 font-mono">
+                          {valOuPreencher(
+                            relatorio.cabecalho.razaoSocial,
+                            'HIDROGEO ENGENHARIA E POÇOS ARTESIANOS LTDA.'
+                          )}
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1450,11 +1293,58 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
         {/* =====================================================================
             ANEXO I — RELATÓRIO ESPECIALIZADO DE TESTE DE BOMBEAMENTO (DEPOIS DE TODO O RELATÓRIO PRINCIPAL)
            ===================================================================== */}
-        {relatorio.dadosPoco?.testeVazaoSEMA?.ativo && isSecaoAtiva('anexos') &&
+        {isSecaoAtiva('anexos') && relatorio.dadosPoco?.testeVazaoSEMA?.ativo !== false &&
           (() => {
-            const testeSEMA = relatorio.dadosPoco.testeVazaoSEMA;
+            const testeSEMA = relatorio.dadosPoco?.testeVazaoSEMA || {
+              ativo: true,
+              tipoEnsaio: 'Contínuo 24h a Vazão Constante',
+              etapaLabel: '24H',
+              referenciaMedidasM: '0,00',
+              responsavelTecnicoNome: nomeRespTecnico,
+              responsavelTecnicoCREA: creaRespTecnico,
+              responsavelTecnicoCPF: '',
+              artNumero: '[DADO A PREENCHER EM CAMPO]',
+              dataInicioEnsaio: relatorio.cabecalho.dataExecucao || '2026-03-13',
+              horaInicioBombeamento: '11:30:00',
+              dataFinalBombeamento: relatorio.cabecalho.dataExecucao || '2026-03-13',
+              horaFinalBombeamento: '18:10:00',
+              dataInicioRecuperacao: relatorio.cabecalho.dataExecucao || '2026-03-13',
+              horaInicioRecuperacao: '18:10:00',
+              dataFinalRecuperacao: relatorio.cabecalho.dataExecucao || '2026-03-13',
+              horaFinalRecuperacao: '18:45:00',
+              tempoRecuperacaoMinutos: '35',
+              nivelRecuperacaoFinalM: '33,60',
+              vazaoOutorgaRecomendadaM3h: '10,29',
+              regimeBombeamentoHorasDia: '16',
+              etapas: relatorio.dadosPoco?.testeVazaoSEMA?.etapas || [
+                {
+                  id: 'step-1',
+                  etapa: 1,
+                  duracaoMinutos: 120,
+                  vazaoM3h: '6,50',
+                  nivelDinamicoM: '46,20',
+                  observacao: '1ª Etapa Escalonada — Regime Laminar Predominante',
+                },
+                {
+                  id: 'step-2',
+                  etapa: 2,
+                  duracaoMinutos: 120,
+                  vazaoM3h: '8,40',
+                  nivelDinamicoM: '54,80',
+                  observacao: '2ª Etapa Escalonada — Transição Hidrodinâmica',
+                },
+                {
+                  id: 'step-3',
+                  etapa: 3,
+                  duracaoMinutos: 240,
+                  vazaoM3h: '10,29',
+                  nivelDinamicoM: '64,10',
+                  observacao: '3ª Etapa Nominal Estabilizada — Vazão Recomendada (24h)',
+                },
+              ],
+            };
             const calcSEMA = calcularParametrosStepDrawdownSEMA(
-              relatorio.dadosPoco.nivelEstatico,
+              relatorio.dadosPoco?.nivelEstatico || '22,40 m',
               testeSEMA
             );
 
@@ -1649,11 +1539,11 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                       </span>
                       <span>
                         <strong>Poço:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco.pocoId, 'PT01')} |{' '}
+                        {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')} |{' '}
                         <strong>N.E.:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco.nivelEstatico, '22,40 m')} |{' '}
+                        {valOuPreencher(relatorio.dadosPoco?.nivelEstatico, '22,40 m')} |{' '}
                         <strong>Bomba:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco.profundidadeBomba, '84,00 m')}
+                        {valOuPreencher(relatorio.dadosPoco?.profundidadeBomba, '84,00 m')}
                       </span>
                       <span>
                         <strong>Data:</strong>{' '}
@@ -1753,9 +1643,9 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     <div className="text-[7pt] font-mono bg-[#F5F7FA] border border-[#DDE3EC] px-2.5 py-1.5 flex flex-wrap justify-between gap-2">
                       <span>
                         <strong>Poço:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco.pocoId, 'PT01')} |{' '}
+                        {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')} |{' '}
                         <strong>N.E.:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco.nivelEstatico, '22,40 m')} |{' '}
+                        {valOuPreencher(relatorio.dadosPoco?.nivelEstatico, '22,40 m')} |{' '}
                         <strong>ND máx.:</strong> 64,10 m (s máx = 41,70 m)
                       </span>
                       <span>

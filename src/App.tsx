@@ -51,9 +51,16 @@ import { A4Preview } from './components/A4Preview';
 import { PocosManager } from './components/PocosManager';
 import { StepDrawdownSection } from './components/StepDrawdownSection';
 import { TemplateManagerModal } from './components/TemplateManagerModal';
+import { SignatureSection } from './components/SignatureSection';
+import {
+  ImportarOSCampoModal,
+  DadosExtraidosOSCampo,
+} from './components/ImportarOSCampoModal';
+import { PocoLocationMap } from './components/PocoLocationMap';
 import {
   Building2,
   Droplets,
+  PenTool,
   Wrench,
   Package,
   CheckSquare,
@@ -104,6 +111,7 @@ const SECOES_SIDEBAR: {
   { id: 'checklist', label: 'Checklist de Qualidade', icon: CheckSquare },
   { id: 'fotos', label: 'Registro Fotográfico', icon: Camera },
   { id: 'ocorrencias', label: 'Ocorrências de Campo', icon: AlertTriangle },
+  { id: 'assinaturas', label: 'Termo & Assinaturas', icon: PenTool },
   { id: 'preview', label: 'Laudo A4 / PDF', icon: FileText },
 ];
 
@@ -156,6 +164,8 @@ export default function App() {
   );
   const [modalGerenciarTemplatesAberta, setModalGerenciarTemplatesAberta] =
     useState<boolean>(false);
+  const [modalImportarOSAberta, setModalImportarOSAberta] =
+    useState<boolean>(false);
 
   const [erroSistema, setErroSistema] = useState<string | null>(null);
   const [toast, setToast] = useState<{
@@ -165,6 +175,14 @@ export default function App() {
   const [horarioUltimoSave, setHorarioUltimoSave] = useState<string>('');
   const [salvandoAuto, setSalvandoAuto] = useState<boolean>(false);
   const [exportandoPdf, setExportandoPdf] = useState<boolean>(false);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState<boolean>(false);
+
+  useEffect(() => {
+    const onQuotaExceeded = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () =>
+      window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
 
   const [filaParaCorte, setFilaParaCorte] = useState<ArquivoParaCorte[]>([]);
   const inputFotosRef = useRef<HTMLInputElement | null>(null);
@@ -183,7 +201,7 @@ export default function App() {
     []
   );
 
-  // Inicialização do Banco de Dados (Prioridade Supabase Nuvem + Cache Local)
+  // Inicialização do Banco de Dados (Prioridade Supabase + Cache Local)
   useEffect(() => {
     let ativo = true;
     async function inicializarBanco() {
@@ -690,6 +708,7 @@ export default function App() {
     const novo: ItemServicoConduzido = {
       id: `srv-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       descricao: '',
+      unidade: 'UN',
       quantidade: '1',
       status: 'Executado',
     };
@@ -805,6 +824,158 @@ export default function App() {
   const handleExcluirTemplateCustom = (id: string) => {
     excluirTemplateCustomizado(id);
     setListaTemplates(obterTodosTemplates());
+  };
+
+  // Aplica os dados extraídos de um PDF ou Foto de Ordem de Serviço Manuscrita
+  const handleAplicarDadosOSCampo = async (
+    dados: DadosExtraidosOSCampo,
+    modo: 'atual' | 'novo'
+  ) => {
+    const base =
+      modo === 'novo'
+        ? criarRelatorioEmBranco(relatorioAtivo.cabecalho)
+        : relatorioAtivo;
+
+    const templatePreventiva = listaTemplates.find(
+      (t) => t.id === 'manutencao-preventiva-completa'
+    );
+
+    const novoRelatorio: RelatorioTecnico = {
+      ...base,
+      atualizadoEm: Date.now(),
+      cabecalho: {
+        ...base.cabecalho,
+        contratoOS: dados.numeroOS || base.cabecalho.contratoOS,
+        contratoRef: dados.contratoRef || base.cabecalho.contratoRef,
+        tipoServico:
+          dados.tipoServico ||
+          base.cabecalho.tipoServico ||
+          'MANUTENÇÃO PREVENTIVA DE POÇO ARTESIANO',
+        statusOS: 'Concluído',
+        cliente: dados.cliente || base.cabecalho.cliente,
+        contatoLocal:
+          dados.contatoLocal ||
+          dados.nomeRepresentanteCliente ||
+          base.cabecalho.contatoLocal,
+        telefoneContato:
+          dados.telefoneContato || base.cabecalho.telefoneContato,
+        localizacao: dados.localizacao || base.cabecalho.localizacao,
+        cidadeUF: dados.cidadeUF || base.cabecalho.cidadeUF,
+        dataExecucao: dados.dataExecucaoISO || base.cabecalho.dataExecucao,
+      },
+      dadosPoco: {
+        ...base.dadosPoco,
+        incluirNoRelatorio: true,
+        pocoId: dados.pocoTag || base.dadosPoco.pocoId || 'PT-01',
+        profundidadeTotal:
+          dados.profundidadeTotal || base.dadosPoco.profundidadeTotal,
+        diametroRevestimento:
+          dados.diametroRevestimento || base.dadosPoco.diametroRevestimento,
+        nivelEstatico: dados.nivelEstatico || base.dadosPoco.nivelEstatico,
+        nivelDinamico: dados.nivelDinamico || base.dadosPoco.nivelDinamico,
+        vazaoTeste: dados.vazaoTeste || base.dadosPoco.vazaoTeste,
+        crivo: dados.crivo || base.dadosPoco.crivo,
+        eletrodoSuperior:
+          dados.eletrodoSuperior || base.dadosPoco.eletrodoSuperior,
+        eletrodoInferior:
+          dados.eletrodoInferior || base.dadosPoco.eletrodoInferior,
+        tuboEdutor: dados.tuboEdutor || base.dadosPoco.tuboEdutor,
+        especificacaoBomba:
+          dados.especificacaoBomba || base.dadosPoco.especificacaoBomba,
+        motobombaEstado: dados.motobombaEstado
+          ?.toLowerCase()
+          .includes('novo')
+          ? 'Novo'
+          : 'Usado',
+        painelEletrico:
+          dados.painelEletrico || base.dadosPoco.painelEletrico,
+      },
+      descricaoServico:
+        base.descricaoServico.trim() ||
+        templatePreventiva?.conteudo ||
+        '',
+      equipe:
+        dados.equipe && dados.equipe.length > 0
+          ? dados.equipe.map((m, idx) => ({
+              id: `eq_os_${Date.now()}_${idx}`,
+              nome: m.nome,
+              funcao: m.funcao || 'Técnico de Campo',
+            }))
+          : base.equipe,
+      servicosConduzidos:
+        dados.servicos && dados.servicos.length > 0
+          ? dados.servicos.map((s, idx) => ({
+              id: `srv_os_${Date.now()}_${idx}`,
+              descricao: s.descricao,
+              unidade: s.unidade || 'UN',
+              quantidade: s.quantidade || '1',
+              status:
+                s.status === 'Pendente' || s.status === 'Cancelado'
+                  ? s.status
+                  : 'Executado',
+            }))
+          : base.servicosConduzidos,
+      materiaisAplicados:
+        dados.materiais && dados.materiais.length > 0
+          ? dados.materiais.map((m, idx) => ({
+              id: `mat_os_${Date.now()}_${idx}`,
+              descricao: m.descricao,
+              unidade: m.unidade || 'UN',
+              quantidade: m.quantidade || '1,00',
+              situacao: 'Aplicado',
+            }))
+          : base.materiaisAplicados,
+      ocorrenciasCampo: {
+        ...base.ocorrenciasCampo,
+        recomendacoes:
+          dados.observacoesManuscritas ||
+          base.ocorrenciasCampo.recomendacoes,
+        observacoesGerais:
+          dados.dadosCarimboVersoResumo ||
+          base.ocorrenciasCampo.observacoesGerais,
+      },
+      assinaturaCliente: dados.nomeRepresentanteCliente
+        ? {
+            dataUrl: base.assinaturaCliente?.dataUrl || '',
+            nomeSignatario: dados.nomeRepresentanteCliente,
+            funcao: 'Representante / Recebedor no Local',
+            dataRegistro:
+              dados.dataExecucaoISO ||
+              new Date().toISOString().split('T')[0],
+          }
+        : base.assinaturaCliente,
+    };
+
+    setRelatorioAtivo(novoRelatorio);
+    setSecaoAtiva('preview');
+
+    try {
+      const salvo = await salvarRelatorio(novoRelatorio);
+      setRelatoriosSalvos((prev) => {
+        const semAtual = prev.filter((r) => r.uuid !== salvo.uuid);
+        return [salvo, ...semAtual].sort(
+          (a, b) => b.atualizadoEm - a.atualizadoEm
+        );
+      });
+      if (isSupabaseConfigured) {
+        const resNuvem = await salvarRelatorioSupabase(salvo);
+        if (resNuvem.sucesso) {
+          const listaNuvem = await listarRelatoriosSupabase();
+          if (listaNuvem && listaNuvem.length > 0) {
+            setRelatoriosSupabase(listaNuvem);
+          }
+        }
+      }
+      showToast(
+        `Ordem de Serviço ${dados.numeroOS || ''} importada e sincronizada com sucesso!`,
+        'success'
+      );
+    } catch {
+      showToast(
+        'Dados da O.S. preenchidos no relatório com sucesso!',
+        'success'
+      );
+    }
   };
 
   // Fotos 1:1
@@ -1068,6 +1239,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#F0F3F7] dark:bg-slate-950 text-[#1B2A3B] dark:text-slate-100">
+      {gmpQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
       {/* HEADER PRINCIPAL (Top Bar 3-Zone Contract com cores Navy #1B2A3B e Amber #E8A020) */}
       <header className="sticky top-0 z-40 h-14 sm:h-[60px] bg-[#1B2A3B] px-3 sm:px-5 xl:px-7 flex items-center justify-between gap-2 sm:gap-4 shadow-md print:hidden">
         {/* Zone 1: Sidebar Toggle + Brand Title + Progress */}
@@ -1117,7 +1304,7 @@ export default function App() {
             }`}
           >
             <Cloud className="w-3 h-3 shrink-0" />
-            <span>{isSupabaseConfigured ? 'Supabase Nuvem' : 'IndexedDB Local'}</span>
+            <span>{isSupabaseConfigured ? 'Supabase' : 'IndexedDB Local'}</span>
           </span>
         </div>
 
@@ -1156,6 +1343,15 @@ export default function App() {
           </button>
           <button
             type="button"
+            onClick={() => setModalImportarOSAberta(true)}
+            className="px-2.5 py-1.5 rounded-lg bg-[#E8A020]/15 border border-[#E8A020]/40 text-[#E8A020] hover:bg-[#E8A020] hover:text-[#1B2A3B] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 font-bold"
+            title="Importar Ficha de Campo / Ordem de Serviço Manuscrita em PDF ou Foto"
+          >
+            <Sparkles className="w-3.5 h-3.5" />
+            <span>Importar</span>
+          </button>
+          <button
+            type="button"
             onClick={handlePersistirManual}
             className="px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-[#E8A020] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
             title="Salvar alterações no banco de dados local (IndexedDB) e sincronizar com o Supabase na nuvem"
@@ -1172,7 +1368,7 @@ export default function App() {
             }`}
           >
             <FileText className="w-3.5 h-3.5 text-[#E8A020]" />
-            <span>Visualizar A4</span>
+            <span>A4</span>
           </button>
         </nav>
 
@@ -1188,6 +1384,14 @@ export default function App() {
             className="md:hidden p-2 rounded-lg bg-white/10 hover:bg-white/15 text-white flex items-center gap-1 text-xs font-semibold"
           >
             <FolderOpen className="w-4 h-4 text-[#E8A020]" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setModalImportarOSAberta(true)}
+            title="Importar O.S. Manuscrita (PDF/Foto)"
+            className="md:hidden p-2 rounded-lg bg-[#E8A020]/20 hover:bg-[#E8A020]/30 text-[#E8A020] flex items-center justify-center"
+          >
+            <Sparkles className="w-4 h-4" />
           </button>
           <button
             type="button"
@@ -1224,7 +1428,7 @@ export default function App() {
             className="px-3 sm:px-4 py-2 rounded-lg text-xs font-bold bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
           >
             <FileDown className="w-4 h-4 shrink-0" />
-            <span>{exportandoPdf ? 'Exportando...' : 'Exportar PDF'}</span>
+            <span>{exportandoPdf ? 'Exportando...' : 'PDF'}</span>
           </button>
           <button
             type="button"
@@ -1765,6 +1969,247 @@ export default function App() {
                       className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
                     />
                   </div>
+
+                  <div className="md:col-span-2">
+                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                      Coordenadas Geográficas (Latitude / Longitude)
+                    </label>
+                    <input
+                      type="text"
+                      value={
+                        relatorioAtivo.dadosPoco.coordenadasGeograficas ||
+                        relatorioAtivo.cabecalho.coordenadasGeograficas ||
+                        ''
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        atualizarDadosPoco('coordenadasGeograficas', val);
+                        atualizarCabecalho('coordenadasGeograficas', val);
+                      }}
+                      placeholder="Ex: LAT -21.1767° S | LON -47.8208° W (SIRGAS 2000)"
+                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                      Coordenadas UTM
+                    </label>
+                    <input
+                      type="text"
+                      value={relatorioAtivo.dadosPoco.coordenadasUTM}
+                      onChange={(e) =>
+                        atualizarDadosPoco('coordenadasUTM', e.target.value)
+                      }
+                      placeholder="Ex: Zona 23K | E = 207.184 m | N = 7.656.112 m"
+                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                    />
+                  </div>
+                </div>
+
+                {/* Mapa Automático por Coordenadas Geográficas (Latitude/Longitude) */}
+                <PocoLocationMap
+                  coordenadasGeograficas={
+                    relatorioAtivo.dadosPoco.coordenadasGeograficas ||
+                    relatorioAtivo.cabecalho.coordenadasGeograficas
+                  }
+                  coordenadasUTM={relatorioAtivo.dadosPoco.coordenadasUTM}
+                  pocoTag={relatorioAtivo.dadosPoco.pocoId}
+                  cliente={relatorioAtivo.cabecalho.cliente}
+                  localizacao={relatorioAtivo.cabecalho.localizacao}
+                  cidadeUF={relatorioAtivo.cabecalho.cidadeUF}
+                  onChangeCoordenadas={({
+                    coordenadasGeograficas,
+                    coordenadasUTM,
+                  }) => {
+                    atualizarDadosPoco(
+                      'coordenadasGeograficas',
+                      coordenadasGeograficas
+                    );
+                    atualizarCabecalho(
+                      'coordenadasGeograficas',
+                      coordenadasGeograficas
+                    );
+                    atualizarDadosPoco('coordenadasUTM', coordenadasUTM);
+                  }}
+                />
+              </div>
+
+              {/* Card: Responsabilidade Técnica e Elaboração do Relatório */}
+              <div className="rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-6 space-y-4">
+                <div className="flex items-center gap-3 text-xs font-bold uppercase tracking-wider text-[#6B7A8D] dark:text-slate-400">
+                  <span>Responsabilidade Técnica e Elaboração do Relatório</span>
+                  <div className="flex-1 h-px bg-[#DDE3EC] dark:bg-slate-800" />
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {/* Bloco 1: Responsável Técnico */}
+                  <div className="p-4 rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-[#F7F9FC]/70 dark:bg-slate-950/40 space-y-3">
+                    <div className="text-xs font-bold uppercase text-[#1B2A3B] dark:text-slate-200 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#E8A020]" />
+                      <span>Responsável Técnico (Engenharia / Geologia)</span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11.5px] font-semibold text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                        Nome do Responsável Técnico
+                      </label>
+                      <input
+                        type="text"
+                        value={
+                          relatorioAtivo.cabecalho.responsavelTecnicoNome ??
+                          relatorioAtivo.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoNome ??
+                          relatorioAtivo.assinaturaResponsavel?.nomeSignatario ??
+                          'José Roberto Ribeiro'
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          atualizarCabecalho('responsavelTecnicoNome', val);
+                          setRelatorioAtivo((prev) => ({
+                            ...prev,
+                            dadosPoco: {
+                              ...prev.dadosPoco,
+                              testeVazaoSEMA: prev.dadosPoco?.testeVazaoSEMA
+                                ? { ...prev.dadosPoco.testeVazaoSEMA, responsavelTecnicoNome: val }
+                                : undefined,
+                            },
+                            assinaturaResponsavel: {
+                              dataUrl: prev.assinaturaResponsavel?.dataUrl || '',
+                              nomeSignatario: val,
+                              documento:
+                                prev.cabecalho.responsavelTecnicoCREA ||
+                                prev.assinaturaResponsavel?.documento ||
+                                'CREA [DADO A PREENCHER EM CAMPO]',
+                              funcao: 'Responsável Técnico — Engenheiro Geólogo / Hidrogeólogo',
+                              dataRegistro:
+                                prev.assinaturaResponsavel?.dataRegistro ||
+                                new Date().toLocaleString('pt-BR'),
+                            },
+                          }));
+                        }}
+                        placeholder="Ex: Eng. Geólogo José Roberto Ribeiro"
+                        className="w-full px-3 py-2.5 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11.5px] font-semibold text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                        Registro Profissional (CREA / CAU)
+                      </label>
+                      <input
+                        type="text"
+                        value={
+                          relatorioAtivo.cabecalho.responsavelTecnicoCREA ??
+                          relatorioAtivo.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoCREA ??
+                          relatorioAtivo.assinaturaResponsavel?.documento ??
+                          'CREA [DADO A PREENCHER EM CAMPO]'
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          atualizarCabecalho('responsavelTecnicoCREA', val);
+                          setRelatorioAtivo((prev) => ({
+                            ...prev,
+                            dadosPoco: {
+                              ...prev.dadosPoco,
+                              testeVazaoSEMA: prev.dadosPoco?.testeVazaoSEMA
+                                ? { ...prev.dadosPoco.testeVazaoSEMA, responsavelTecnicoCREA: val }
+                                : undefined,
+                            },
+                            assinaturaResponsavel: {
+                              dataUrl: prev.assinaturaResponsavel?.dataUrl || '',
+                              nomeSignatario:
+                                prev.cabecalho.responsavelTecnicoNome ||
+                                prev.assinaturaResponsavel?.nomeSignatario ||
+                                'José Roberto Ribeiro',
+                              documento: val,
+                              funcao: 'Responsável Técnico — Engenheiro Geólogo / Hidrogeólogo',
+                              dataRegistro:
+                                prev.assinaturaResponsavel?.dataRegistro ||
+                                new Date().toLocaleString('pt-BR'),
+                            },
+                          }));
+                        }}
+                        placeholder="Ex: CREA-SP 5068912410 / CREA-MT"
+                        className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Bloco 2: Responsável pela Elaboração do Relatório */}
+                  <div className="p-4 rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-[#F7F9FC]/70 dark:bg-slate-950/40 space-y-3">
+                    <div className="text-xs font-bold uppercase text-[#1B2A3B] dark:text-slate-200 flex items-center gap-2">
+                      <span className="w-2.5 h-2.5 rounded-full bg-blue-600" />
+                      <span>Responsável pela Elaboração do Relatório</span>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11.5px] font-semibold text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                        Nome / Departamento Elaborador
+                      </label>
+                      <input
+                        type="text"
+                        value={
+                          relatorioAtivo.cabecalho.responsavelElaboracaoNome ??
+                          relatorioAtivo.assinaturaCliente?.nomeSignatario ??
+                          'Departamento Técnico de Hidrogeologia'
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          atualizarCabecalho('responsavelElaboracaoNome', val);
+                          setRelatorioAtivo((prev) => ({
+                            ...prev,
+                            assinaturaCliente: {
+                              dataUrl: prev.assinaturaCliente?.dataUrl || '',
+                              nomeSignatario: val,
+                              funcao:
+                                prev.cabecalho.responsavelElaboracaoCargo ||
+                                prev.assinaturaCliente?.funcao ||
+                                'Responsável pela Elaboração do Relatório Técnico',
+                              dataRegistro:
+                                prev.assinaturaCliente?.dataRegistro ||
+                                new Date().toLocaleString('pt-BR'),
+                            },
+                          }));
+                        }}
+                        placeholder="Ex: Departamento Técnico de Hidrogeologia ou Geól. Ana Paula"
+                        className="w-full px-3 py-2.5 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11.5px] font-semibold text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                        Cargo / Título no Documento
+                      </label>
+                      <input
+                        type="text"
+                        value={
+                          relatorioAtivo.cabecalho.responsavelElaboracaoCargo ??
+                          relatorioAtivo.assinaturaCliente?.funcao ??
+                          'Responsável pela Elaboração do Relatório Técnico'
+                        }
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          atualizarCabecalho('responsavelElaboracaoCargo', val);
+                          setRelatorioAtivo((prev) => ({
+                            ...prev,
+                            assinaturaCliente: {
+                              dataUrl: prev.assinaturaCliente?.dataUrl || '',
+                              nomeSignatario:
+                                prev.cabecalho.responsavelElaboracaoNome ||
+                                prev.assinaturaCliente?.nomeSignatario ||
+                                'Departamento Técnico de Hidrogeologia',
+                              funcao: val,
+                              dataRegistro:
+                                prev.assinaturaCliente?.dataRegistro ||
+                                new Date().toLocaleString('pt-BR'),
+                            },
+                          }));
+                        }}
+                        placeholder="Responsável pela Elaboração do Relatório Técnico"
+                        className="w-full px-3 py-2.5 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -1966,6 +2411,27 @@ export default function App() {
 
                   <div className="sm:col-span-2 flex flex-col justify-between">
                     <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
+                      Coordenadas Geográficas (Latitude / Longitude)
+                    </label>
+                    <input
+                      type="text"
+                      value={
+                        relatorioAtivo.dadosPoco.coordenadasGeograficas ||
+                        relatorioAtivo.cabecalho.coordenadasGeograficas ||
+                        ''
+                      }
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        atualizarDadosPoco('coordenadasGeograficas', val);
+                        atualizarCabecalho('coordenadasGeograficas', val);
+                      }}
+                      placeholder="Ex: LAT -21.1767° S | LON -47.8208° W (SIRGAS 2000)"
+                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                    />
+                  </div>
+
+                  <div className="sm:col-span-2 flex flex-col justify-between">
+                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
                       Coordenadas UTM
                     </label>
                     <input
@@ -1979,6 +2445,33 @@ export default function App() {
                     />
                   </div>
                 </div>
+
+                {/* Mapa Automático na Aba de Dados do Poço */}
+                <PocoLocationMap
+                  coordenadasGeograficas={
+                    relatorioAtivo.dadosPoco.coordenadasGeograficas ||
+                    relatorioAtivo.cabecalho.coordenadasGeograficas
+                  }
+                  coordenadasUTM={relatorioAtivo.dadosPoco.coordenadasUTM}
+                  pocoTag={relatorioAtivo.dadosPoco.pocoId}
+                  cliente={relatorioAtivo.cabecalho.cliente}
+                  localizacao={relatorioAtivo.cabecalho.localizacao}
+                  cidadeUF={relatorioAtivo.cabecalho.cidadeUF}
+                  onChangeCoordenadas={({
+                    coordenadasGeograficas,
+                    coordenadasUTM,
+                  }) => {
+                    atualizarDadosPoco(
+                      'coordenadasGeograficas',
+                      coordenadasGeograficas
+                    );
+                    atualizarCabecalho(
+                      'coordenadasGeograficas',
+                      coordenadasGeograficas
+                    );
+                    atualizarDadosPoco('coordenadasUTM', coordenadasUTM);
+                  }}
+                />
               </div>
 
               {/* Card: Equipamentos Hidromecânicos */}
@@ -2067,6 +2560,7 @@ export default function App() {
               {/* Card: Teste de Vazão Padrão SEMA (Step-Drawdown Test & Grupo Geoeste) */}
               <StepDrawdownSection
                 dadosPoco={relatorioAtivo.dadosPoco}
+                relatoriosAnteriores={relatoriosSalvos}
                 onChangeTesteSEMA={(novoTeste) =>
                   atualizarDadosPoco('testeVazaoSEMA', novoTeste)
                 }
@@ -2282,15 +2776,16 @@ export default function App() {
                 </div>
 
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[540px] border-collapse text-sm">
+                  <table className="w-full min-w-[580px] border-collapse text-sm">
                     <thead>
                       <tr className="bg-[#F7F9FC] dark:bg-slate-950 border-b-2 border-[#DDE3EC] dark:border-slate-800 text-[11px] font-bold uppercase text-[#6B7A8D]">
                         <th className="py-2.5 px-3 text-left w-10">#</th>
                         <th className="py-2.5 px-3 text-left">
                           Descrição dos Serviços Conduzidos
                         </th>
+                        <th className="py-2.5 px-3 text-left w-32">Unidade</th>
                         <th className="py-2.5 px-3 text-left w-24">Qtd</th>
-                        <th className="py-2.5 px-3 text-left w-40">Status</th>
+                        <th className="py-2.5 px-3 text-left w-36">Status</th>
                         <th className="py-2.5 px-3 w-12" />
                       </tr>
                     </thead>
@@ -2317,7 +2812,22 @@ export default function App() {
                           </td>
                           <td className="py-2 px-3">
                             <input
-                              type="number"
+                              type="text"
+                              value={srv.unidade ?? 'UN'}
+                              onChange={(e) =>
+                                atualizarServicoRow(
+                                  srv.id,
+                                  'unidade',
+                                  e.target.value
+                                )
+                              }
+                              placeholder="Ex: UN, h, m, sv"
+                              className="w-full px-2.5 py-2 text-sm font-medium rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                            />
+                          </td>
+                          <td className="py-2 px-3">
+                            <input
+                              type="text"
                               value={srv.quantidade}
                               onChange={(e) =>
                                 atualizarServicoRow(
@@ -2326,6 +2836,7 @@ export default function App() {
                                   e.target.value
                                 )
                               }
+                              placeholder="1"
                               className="w-20 px-2.5 py-2 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
                             />
                           </td>
@@ -2758,6 +3269,77 @@ export default function App() {
             </div>
           )}
 
+          {/* SEÇÃO: TERMO DE ENCERRAMENTO E ASSINATURAS */}
+          {secaoAtiva === 'assinaturas' && (
+            <div className="space-y-5">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-2">
+                <div>
+                  <h1 className="text-xl font-bold text-[#1B2A3B] dark:text-slate-100">
+                    Termo de Encerramento e Assinaturas
+                  </h1>
+                  <p className="text-xs text-[#6B7A8D] dark:text-slate-400 mt-0.5">
+                    Configure os dados e assinaturas do Responsável Técnico e do Responsável pela Elaboração do Relatório (ABNT NBR 12212 / 12244).
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setSecaoAtiva('preview')}
+                  className="px-3.5 py-2 text-xs font-bold rounded-lg bg-[#1B2A3B] hover:bg-[#243447] text-white flex items-center gap-1.5 self-start sm:self-auto shadow-xs"
+                >
+                  <FileText className="w-4 h-4 text-[#E8A020]" />
+                  <span>Visualizar no Laudo A4 / PDF</span>
+                </button>
+              </div>
+
+              <SignatureSection
+                assinaturaResponsavel={relatorioAtivo.assinaturaResponsavel}
+                assinaturaCliente={relatorioAtivo.assinaturaCliente}
+                onChangeResponsavel={(assinatura) => {
+                  setRelatorioAtivo((prev) => ({
+                    ...prev,
+                    assinaturaResponsavel: assinatura,
+                    cabecalho: {
+                      ...prev.cabecalho,
+                      responsavelTecnicoNome:
+                        assinatura?.nomeSignatario || prev.cabecalho.responsavelTecnicoNome,
+                      responsavelTecnicoCREA:
+                        assinatura?.documento || prev.cabecalho.responsavelTecnicoCREA,
+                    },
+                    dadosPoco: {
+                      ...prev.dadosPoco,
+                      testeVazaoSEMA: prev.dadosPoco?.testeVazaoSEMA
+                        ? {
+                            ...prev.dadosPoco.testeVazaoSEMA,
+                            responsavelTecnicoNome:
+                              assinatura?.nomeSignatario ||
+                              prev.dadosPoco.testeVazaoSEMA.responsavelTecnicoNome,
+                            responsavelTecnicoCREA:
+                              assinatura?.documento ||
+                              prev.dadosPoco.testeVazaoSEMA.responsavelTecnicoCREA,
+                          }
+                        : undefined,
+                    },
+                  }));
+                  showToast('Assinatura do Responsável Técnico atualizada!');
+                }}
+                onChangeCliente={(assinatura) => {
+                  setRelatorioAtivo((prev) => ({
+                    ...prev,
+                    assinaturaCliente: assinatura,
+                    cabecalho: {
+                      ...prev.cabecalho,
+                      responsavelElaboracaoNome:
+                        assinatura?.nomeSignatario || prev.cabecalho.responsavelElaboracaoNome,
+                      responsavelElaboracaoCargo:
+                        assinatura?.funcao || prev.cabecalho.responsavelElaboracaoCargo,
+                    },
+                  }));
+                  showToast('Assinatura do Responsável pela Elaboração atualizada!');
+                }}
+              />
+            </div>
+          )}
+
           {/* SEÇÃO 8: VISUALIZAÇÃO A4 & EXPORTAÇÃO PDF */}
           {secaoAtiva === 'preview' && (
             <div className="space-y-4">
@@ -2892,7 +3474,7 @@ export default function App() {
                     </p>
                   </div>
 
-                  {/* Alternador de Origem: IndexedDB Local vs Supabase Nuvem */}
+                  {/* Alternador de Origem: IndexedDB Local vs Supabase */}
                   <div className="flex items-center gap-2 shrink-0">
                     <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold">
                       <button
@@ -2922,7 +3504,7 @@ export default function App() {
                       >
                         <Cloud className="w-3.5 h-3.5" />
                         <span>
-                          {carregandoSupabase ? 'Carregando...' : `Supabase Nuvem (${relatoriosSupabase.length})`}
+                          {carregandoSupabase ? 'Carregando...' : `Supabase (${relatoriosSupabase.length})`}
                         </span>
                       </button>
                     </div>
@@ -3177,6 +3759,14 @@ export default function App() {
         onExcluirTemplate={handleExcluirTemplateCustom}
         onAplicarTemplate={aplicarTemplateDescricao}
         onRecarregarTemplates={() => setListaTemplates(obterTodosTemplates())}
+        showToast={showToast}
+      />
+
+      {/* MODAL DE IMPORTAÇÃO DE ORDEM DE SERVIÇO MANUSCRITA (PDF / FOTO) */}
+      <ImportarOSCampoModal
+        isOpen={modalImportarOSAberta}
+        onClose={() => setModalImportarOSAberta(false)}
+        onAplicarDados={handleAplicarDadosOSCampo}
         showToast={showToast}
       />
 

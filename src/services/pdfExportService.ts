@@ -10,6 +10,10 @@ import {
   construirEquacoesLivroRelatorio,
   capturarFormulaSVGParaImagemPDF,
 } from '../components/MathFormulaBlock';
+import {
+  extrairCoordenadasGeograficas,
+  latLngParaUTM,
+} from '../utils/coordenadasParser';
 
 export type RGBTuple = [number, number, number];
 
@@ -48,8 +52,8 @@ export interface ConfiguracaoLayoutPDFA4 {
     exibirTimbreNaFolhaDeRosto: boolean;
   };
   rodape: {
-    cidadeSedePadrao: string;
-    normasTecnicasPadrao: string;
+    cidadeSedePadrao?: string;
+    normasTecnicasPadrao?: string;
     contarFolhaDeRostoNaPaginacao: boolean;
     exibirNumeracaoNaFolhaDeRosto: boolean;
     alturaFaixaMm: number;
@@ -106,21 +110,18 @@ export const CONFIG_LAYOUT_PDF_A4: Readonly<ConfiguracaoLayoutPDFA4> = {
     baseCorpoTecnicoMm: 18, // Reserva inferior (12mm rodapé + 6mm respiro)
   },
   cabecalho: {
-    razaoSocialPadrao: 'HIDROGEO ENGENHARIA E POÇOS ARTESIANOS LTDA.',
-    cnpjPadrao: '18.492.310/0001-54',
-    enderecoPadrao: 'Av. Presidente Vargas, 2140 – Sala 804 – Jardim Sumaré',
-    cidadeContatoPadrao:
-      'Ribeirão Preto-SP / CEP 14025-700 / Tel.: (16) 3911-8420 / Cel.: (16) 99714-5200',
-    emailPadrao: 'engenharia@hidrogeopocos.com.br',
+    razaoSocialPadrao: '',
+    cnpjPadrao: '',
+    enderecoPadrao: '',
+    cidadeContatoPadrao: '',
+    emailPadrao: '',
     logoLarguraMm: 52.5,
     logoAlturaMm: 15.5,
     exibirTimbreNaFolhaDeRosto: true,
   },
   rodape: {
-    cidadeSedePadrao: 'RIBEIRÃO PRETO-SP',
-    normasTecnicasPadrao: 'ABNT NBR 12212, NBR 12244 & NBR 10719',
     contarFolhaDeRostoNaPaginacao: true,
-    exibirNumeracaoNaFolhaDeRosto: false, // Pela ABNT NBR 14724/10719 a folha de rosto é contada, mas o número só é impresso a partir do corpo textual
+    exibirNumeracaoNaFolhaDeRosto: true,
     alturaFaixaMm: 11,
     posicaoYTextoMm: 291.5,
     posicaoYLinhaMm: 286.5,
@@ -264,6 +265,7 @@ export class RelatorioPDFExporter {
     string,
     { dataUrl: string; widthMm: number; heightMm: number }
   >();
+  private mapaLocalizacaoDataUrl: string | null = null;
 
   constructor(
     relatorio: RelatorioTecnico,
@@ -332,7 +334,8 @@ export class RelatorioPDFExporter {
 
   private get respTecnicoNome(): string {
     return valOuPreencherPDF(
-      this.relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoNome ||
+      this.relatorio.cabecalho.responsavelTecnicoNome ||
+        this.relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoNome ||
         this.relatorio.assinaturaResponsavel?.nomeSignatario,
       'José Roberto Ribeiro'
     );
@@ -340,14 +343,31 @@ export class RelatorioPDFExporter {
 
   private get respTecnicoCREA(): string {
     return valOuPreencherPDF(
-      this.relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoCREA ||
+      this.relatorio.cabecalho.responsavelTecnicoCREA ||
+        this.relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoCREA ||
         this.relatorio.assinaturaResponsavel?.documento,
       'DADO A PREENCHER EM CAMPO'
     );
   }
 
+  private get respElaboracaoNome(): string {
+    return valOuPreencherPDF(
+      this.relatorio.cabecalho.responsavelElaboracaoNome ||
+        this.relatorio.assinaturaCliente?.nomeSignatario,
+      'Departamento Técnico de Hidrogeologia'
+    );
+  }
+
+  private get respElaboracaoCargo(): string {
+    return valOuPreencherPDF(
+      this.relatorio.cabecalho.responsavelElaboracaoCargo ||
+        this.relatorio.assinaturaCliente?.funcao,
+      'Responsável pela Elaboração do Relatório Técnico'
+    );
+  }
+
   private get respTecnicoFormatado(): string {
-    return `Responsável Técnico: [${this.respTecnicoNome}, CREA: ${this.respTecnicoCREA}]`;
+    return `${this.respTecnicoNome}, - ${this.respTecnicoCREA}`;
   }
 
   /**
@@ -655,6 +675,217 @@ export class RelatorioPDFExporter {
         this.formulasCapturadas.set(spec.id, img);
       }
     }
+
+    await this.preCapturarMapaLocalizacao();
+  }
+
+  /**
+   * Pré-captura a imagem estática do Google Maps para inclusão automática na Seção 3 do PDF
+   */
+  private async preCapturarMapaLocalizacao(): Promise<void> {
+    const coord = extrairCoordenadasGeograficas(
+      this.relatorio.dadosPoco?.coordenadasGeograficas,
+      this.relatorio.cabecalho?.coordenadasGeograficas,
+      this.relatorio.dadosPoco?.coordenadasUTM
+    );
+    if (!coord) return;
+
+    try {
+      const label =
+        (this.relatorio.dadosPoco?.pocoId || 'P')
+          .replace(/[^A-Z0-9]/gi, '')
+          .charAt(0)
+          .toUpperCase() || 'P';
+      const resp = await fetch(
+        `/api/maps-static-image?lat=${coord.lat}&lng=${coord.lng}&zoom=16&maptype=hybrid&label=${label}`
+      );
+      if (resp.status === 429) {
+        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+        return;
+      }
+      if (!resp.ok) return;
+      const json = await resp.json();
+      if (json?.quotaExceeded) {
+        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
+        return;
+      }
+      if (json?.dataUrl) {
+        this.mapaLocalizacaoDataUrl = json.dataUrl;
+      }
+    } catch {
+      // Fallback vetorial caso o servidor estático não esteja acessível
+    }
+  }
+
+  /**
+   * Renderiza o bloco compacto de Mapa Georreferenciado do Poço na Seção 3 (Cliente e Local)
+   */
+  private desenharBlocoMapaLocalizacaoPDF(): void {
+    const coord = extrairCoordenadasGeograficas(
+      this.relatorio.dadosPoco?.coordenadasGeograficas,
+      this.relatorio.cabecalho?.coordenadasGeograficas,
+      this.relatorio.dadosPoco?.coordenadasUTM
+    );
+    if (!coord) return;
+
+    const { esquerdaMm } = this.config.margens;
+    const { navy, amber, white, textMuted, bordaTabela } = this.config.cores;
+    const utm = latLngParaUTM(coord.lat, coord.lng);
+    const tagPoco = valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, 'PT01');
+
+    const boxH = 24;
+    this.garantirEspacoVertical(boxH + 2);
+
+    const startY = this.cursorY - 0.5;
+    const mapW = 118;
+    const infoW = this.larguraUtil - mapW - 2;
+    const infoX = esquerdaMm + mapW + 2;
+
+    // Moldura geral
+    this.doc.setFillColor(250, 251, 253);
+    this.doc.setDrawColor(...bordaTabela);
+    this.doc.setLineWidth(0.2);
+    this.doc.rect(esquerdaMm, startY, this.larguraUtil, boxH, 'FD');
+
+    // Área do Mapa (Esquerda)
+    const mapX = esquerdaMm + 1.2;
+    const mapY = startY + 1.2;
+    const mapInnerW = mapW - 1.8;
+    const mapInnerH = boxH - 2.4;
+
+    if (this.mapaLocalizacaoDataUrl) {
+      try {
+        const fmt = this.mapaLocalizacaoDataUrl.includes('image/jpeg')
+          ? 'JPEG'
+          : 'PNG';
+        this.doc.addImage(
+          this.mapaLocalizacaoDataUrl,
+          fmt,
+          mapX,
+          mapY,
+          mapInnerW,
+          mapInnerH,
+          undefined,
+          'FAST'
+        );
+      } catch {
+        this.desenharMalhaCartograficaFallback(
+          mapX,
+          mapY,
+          mapInnerW,
+          mapInnerH,
+          coord.lat,
+          coord.lng
+        );
+      }
+    } else {
+      this.desenharMalhaCartograficaFallback(
+        mapX,
+        mapY,
+        mapInnerW,
+        mapInnerH,
+        coord.lat,
+        coord.lng
+      );
+    }
+
+    this.doc.setDrawColor(...bordaTabela);
+    this.doc.rect(mapX, mapY, mapInnerW, mapInnerH, 'S');
+
+    // Tarja identificadora sobre o mapa
+    this.doc.setFillColor(...navy);
+    this.doc.rect(mapX + 1.2, mapY + 1.2, 62, 4.2, 'F');
+    this.doc.setFillColor(...amber);
+    this.doc.circle(mapX + 3, mapY + 3.3, 0.8, 'F');
+    this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
+    this.doc.setFontSize(5.8);
+    this.doc.setTextColor(...white);
+    this.doc.text(
+      sanitizarTextoWinAnsiPDF(`LOCALIZAÇÃO GEORREFERENCIADA (${tagPoco})`),
+      mapX + 4.8,
+      mapY + 4.0
+    );
+
+    // Painel lateral direito de Georreferenciamento SIRGAS 2000
+    const cardY = startY + 1.2;
+    const cardH = boxH - 2.4;
+    this.doc.setFillColor(...white);
+    this.doc.setDrawColor(...bordaTabela);
+    this.doc.rect(infoX, cardY, infoW - 1.2, cardH, 'FD');
+
+    this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
+    this.doc.setFontSize(6.5);
+    this.doc.setTextColor(...navy);
+    this.doc.text('GEORREFERENCIAMENTO (SIRGAS 2000)', infoX + 2, cardY + 3.8);
+
+    this.doc.setDrawColor(235, 240, 245);
+    this.doc.line(infoX + 1.5, cardY + 4.8, infoX + infoW - 2.7, cardY + 4.8);
+
+    const linhasGeo: Array<[string, string]> = [
+      ['LATITUDE:', `${coord.lat.toFixed(6)}°`],
+      ['LONGITUDE:', `${coord.lng.toFixed(6)}°`],
+      ['GMS:', sanitizarTextoWinAnsiPDF(coord.dmsFormatado)],
+      [
+        'FUSO UTM:',
+        `${utm.zona}${utm.banda} (E:${utm.easting} / N:${utm.northing})`,
+      ],
+    ];
+
+    let yGeo = cardY + 8.0;
+    for (const [rotulo, valor] of linhasGeo) {
+      this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
+      this.doc.setFontSize(6.1);
+      this.doc.setTextColor(...textMuted);
+      this.doc.text(rotulo, infoX + 2, yGeo);
+
+      this.doc.setFont('courier', 'bold');
+      this.doc.setFontSize(6.2);
+      this.doc.setTextColor(...navy);
+      this.doc.text(valor, infoX + infoW - 3, yGeo, { align: 'right' });
+      yGeo += 3.6;
+    }
+
+    this.cursorY = startY + boxH + 2.2;
+  }
+
+  private desenharMalhaCartograficaFallback(
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    lat: number,
+    lng: number
+  ): void {
+    const { navy, amber } = this.config.cores;
+    this.doc.setFillColor(232, 238, 245);
+    this.doc.rect(x, y, w, h, 'F');
+
+    this.doc.setDrawColor(210, 220, 232);
+    this.doc.setLineWidth(0.12);
+    for (let gx = x + 12; gx < x + w; gx += 12) {
+      this.doc.line(gx, y, gx, y + h);
+    }
+    for (let gy = y + 6; gy < y + h; gy += 6) {
+      this.doc.line(x, gy, x + w, gy);
+    }
+
+    const cx = x + w / 2;
+    const cy = y + h / 2;
+    this.doc.setDrawColor(...navy);
+    this.doc.setLineWidth(0.22);
+    this.doc.circle(cx, cy, 4.5, 'S');
+    this.doc.setFillColor(...amber);
+    this.doc.circle(cx, cy, 1.6, 'FD');
+
+    this.doc.setFont('courier', 'bold');
+    this.doc.setFontSize(6.2);
+    this.doc.setTextColor(...navy);
+    this.doc.text(
+      `${lat.toFixed(6)}, ${lng.toFixed(6)}`,
+      cx,
+      y + h - 1.8,
+      { align: 'center' }
+    );
   }
 
   /**
@@ -895,29 +1126,27 @@ export class RelatorioPDFExporter {
    * natureza/objetivo do laudo, quadros formais de Contratante, Contratada, Dados Contratuais,
    * Normas Aplicadas, Responsabilidade Técnica, Síntese do Poço e Local/Data).
    */
-  public renderizarFolhaDeRostoABNT(): void {
+ public renderizarFolhaDeRostoABNT(): void {
     const { esquerdaMm } = this.config.margens;
     const { larguraMm } = this.config.pagina;
-    const { navy, amber, white, textDark, textMuted } = this.config.cores;
+    const { navy, amber, white, textMuted } = this.config.cores;
+    const vis = this.relatorio.secoesVisiveis;
 
-    let yCapa = this.config.margens.topoCorpoTecnicoMm + 2;
+    const yCapa = this.config.margens.topoCorpoTecnicoMm;
 
-    // Moldura Corporativa de Destaque do Título do Relatório
+    // Moldura Corporativa de Destaque do Título do Relatório (compactada para 22mm)
     this.doc.setFillColor(...navy);
-    this.doc.rect(esquerdaMm, yCapa, this.larguraUtil, 28, 'F');
+    this.doc.rect(esquerdaMm, yCapa, this.larguraUtil, 22, 'F');
     this.doc.setFillColor(...amber);
-    this.doc.rect(esquerdaMm, yCapa, 4, 28, 'F');
-
-    this.doc.setTextColor(...amber);
-    this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-    this.doc.setFontSize(8.2);
+    this.doc.rect(esquerdaMm, yCapa, 4, 22, 'F');
 
     this.doc.setTextColor(...white);
-    this.doc.setFontSize(this.config.tipografia.tamanhoTituloCapaPt);
+    this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
+    this.doc.setFontSize(13);
     this.doc.text(
       'RELATÓRIO TÉCNICO DE ENTREGA DE SERVIÇOS',
       larguraMm / 2 + 2,
-      yCapa + 14.5,
+      yCapa + 10.5,
       { align: 'center' }
     );
 
@@ -926,43 +1155,43 @@ export class RelatorioPDFExporter {
       this.relatorio.cabecalho.contratoOS,
       'OS-2026-0842 / CTR-119'
     );
-    this.doc.setFontSize(this.config.tipografia.tamanhoSubtituloCapaPt);
+    this.doc.setFontSize(9);
     this.doc.text(
       `POÇO TUBULAR PROFUNDO (${tagPoco})  •  ORDEM DE SERVIÇO: ${numOS}`,
       larguraMm / 2 + 2,
-      yCapa + 22.5,
+      yCapa + 17.5,
       { align: 'center' }
     );
 
-    this.cursorY = yCapa + 33;
+    this.cursorY = yCapa + 25.5;
 
-
-    // Quadro 1 da Folha de Rosto: INTERESSADO / CONTRATANTE ("Ao")
+    // 1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO
+    this.desenharBarraSecao('1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO (AO)');
     this.executarAutoTable({
-      head: [['1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO (AO)', '', '', '']],
       body: [
         [
-          { content: 'CLIENTE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'CLIENTE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.cliente), colSpan: 3, styles: { fontStyle: 'bold' } },
         ],
         [
-          { content: 'CNPJ / CPF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'CNPJ / CPF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.clienteCNPJ) },
-          { content: 'CONTATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'CONTATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.contatoLocal) },
         ],
         [
-          { content: 'LOCAL DA PRESTAÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'LOCAL DA PRESTAÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.localizacao), colSpan: 3 },
         ],
         [
-          { content: 'CIDADE / UF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'CIDADE / UF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.cidadeUF, 'Ribeirão Preto - SP') },
-          { content: 'TELEFONE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'TELEFONE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.telefoneContato) },
         ],
       ],
       theme: 'grid',
+      styles: { cellPadding: { top: 1.2, right: 2, bottom: 1.2, left: 2 }, fontSize: 7.5 },
       columnStyles: {
         0: { cellWidth: 38 },
         1: { cellWidth: 53 },
@@ -971,65 +1200,37 @@ export class RelatorioPDFExporter {
       },
     });
 
-    // Quadro 2 da Folha de Rosto: EMPRESA EXECUTORA ("Responsável pela Execução")
+    // 2. DADOS CONTRATUAIS, RESPONSABILIDADE TÉCNICA E NORMAS ABNT
+    this.desenharBarraSecao('2. DADOS CONTRATUAIS, RESPONSÁVEL TÉCNICO E NORMAS APLICADAS');
     this.executarAutoTable({
-      head: [['2. EMPRESA RESPONSÁVEL PELA EXECUÇÃO (CONTRATADA)', '', '', '']],
       body: [
         [
-          { content: 'RAZÃO SOCIAL', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: this.razaoEmpresa, colSpan: 3, styles: { fontStyle: 'bold' } },
-        ],
-        [
-          { content: 'CNPJ', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.cnpj, this.config.cabecalho.cnpjPadrao) },
-          { content: 'E-MAIL', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.emailEmpresa, this.config.cabecalho.emailPadrao) },
-        ],
-        [
-          { content: 'ENDEREÇO E CONTATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          {
-            content: `${valOuPreencherPDF(
-              this.relatorio.cabecalho.enderecoEmpresa,
-              this.config.cabecalho.enderecoPadrao
-            )} — ${valOuPreencherPDF(
-              this.relatorio.cabecalho.cidadeContatoEmpresa,
-              this.config.cabecalho.cidadeContatoPadrao
-            )}`,
-            colSpan: 3,
-          },
-        ],
-      ],
-      theme: 'grid',
-      columnStyles: {
-        0: { cellWidth: 38 },
-        1: { cellWidth: 53 },
-        2: { cellWidth: 35 },
-        3: { cellWidth: 56 },
-      },
-    });
-
-    // Quadro 3 da Folha de Rosto: DADOS CONTRATUAIS, RESPONSABILIDADE TÉCNICA E NORMAS ABNT
-    this.executarAutoTable({
-      head: [['3. DADOS CONTRATUAIS, RESPONSÁVEL TÉCNICO E NORMAS APLICADAS', '', '', '']],
-      body: [
-        [
-          { content: 'ORDEM DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'ORDEM DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: numOS, styles: { fontStyle: 'bold' } },
-          { content: 'CONTRATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'CONTRATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.contratoRef, 'CTR-119 / 2026') },
         ],
         [
-          { content: 'SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'DATA DA EXECUÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
+          { content: formatarDataBR(this.relatorio.cabecalho.dataExecucao) },
+          { content: 'STATUS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
+          {
+            content: valOuPreencherPDF(this.relatorio.cabecalho.statusOS, 'Concluído'),
+            styles: { fontStyle: 'bold', textColor: this.config.cores.green },
+          },
+        ],
+        [
+          { content: 'TIPO DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: valOuPreencherPDF(this.relatorio.cabecalho.tipoServico), colSpan: 3 },
         ],
         [
-          { content: 'RESPONSÁVEL TÉCNICO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'RESPONSÁVEL TÉCNICO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: this.respTecnicoNome, styles: { fontStyle: 'bold' } },
-          { content: 'REGISTRO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'REGISTRO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           { content: `CREA: ${this.respTecnicoCREA}` },
         ],
         [
-          { content: 'NORMAS APLICADAS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
+          { content: 'NORMAS APLICADAS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
           {
             content:
               'ABNT NBR 12212 (Projeto de poço tubular), ABNT NBR 12244 (Construção e ensaio de bombeamento de poço tubular) e ABNT NBR 10719 (Relatórios técnicos).',
@@ -1038,48 +1239,7 @@ export class RelatorioPDFExporter {
         ],
       ],
       theme: 'grid',
-      columnStyles: {
-        0: { cellWidth: 38 },
-        1: { cellWidth: 60 },
-        2: { cellWidth: 35 },
-        3: { cellWidth: 56 },
-      },
-    });
-
-    // Quadro 4 da Folha de Rosto: SÍNTESE EXECUTIVA DO POÇO E EQUIPAMENTO DE BOMBEAMENTO
-    this.executarAutoTable({
-      head: [['4. SÍNTESE EXECUTIVA DO POÇO E CONDIÇÕES OPERACIONAIS UNIFICADAS', '', '', '']],
-      body: [
-        [
-          { content: 'IDENTIFICAÇÃO (TAG)', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: tagPoco, styles: { fontStyle: 'bold' } },
-          { content: 'PROFUNDIDADE TOTAL', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.dadosPoco?.profundidadeTotal, '160,00 m') },
-        ],
-        [
-          { content: 'NÍVEL ESTÁTICO (NE)', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.dadosPoco?.nivelEstatico, '22,40 m') },
-          { content: 'NÍVEL DINÂMICO (ND)', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.dadosPoco?.nivelDinamico, '64,10 m') },
-        ],
-        [
-          { content: 'VAZÃO RECOMENDADA', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.dadosPoco?.vazaoTeste, '10,29 m³/h'), styles: { fontStyle: 'bold', textColor: this.config.cores.green } },
-          { content: 'PROF. INST. BOMBA', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          { content: valOuPreencherPDF(this.relatorio.dadosPoco?.profundidadeBomba, '84,00 m'), styles: { fontStyle: 'bold' } },
-        ],
-        [
-          { content: 'EQUIPAMENTO BOMBA', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.2 } },
-          {
-            content: `${valOuPreencherPDF(this.relatorio.dadosPoco?.especificacaoBomba)} (${valOuPreencherPDF(
-              this.relatorio.dadosPoco?.motobombaEstado,
-              'Novo'
-            ).toUpperCase()})`,
-            colSpan: 3,
-          },
-        ],
-      ],
-      theme: 'grid',
+      styles: { cellPadding: { top: 1.2, right: 2, bottom: 1.2, left: 2 }, fontSize: 7.5 },
       columnStyles: {
         0: { cellWidth: 38 },
         1: { cellWidth: 53 },
@@ -1088,69 +1248,10 @@ export class RelatorioPDFExporter {
       },
     });
 
-    // Sumário Executivo da Estrutura Documental na Folha de Rosto
-    this.executarAutoTable({
-      head: [['SUMÁRIO ESTRUTURAL DO LAUDO TÉCNICO (SEÇÕES 1 A 10 + ANEXOS)', 'CONTEÚDO']],
-      body: [
-        ['Seções 1 a 4 — Identificação, Cliente/Local, Dados do Poço e Desenho Construtivo', 'Corpo Técnico'],
-        ['Seções 5 a 8 — Serviços Executados, Parecer Hidrogeológico, Checklist e Recomendações', 'Corpo Técnico'],
-        ['Seções 9 a 10 — Registro Fotográfico de Evidências (1:1) e Termo de Assinaturas', 'Corpo Técnico'],
-        ['Anexos I.1, I.2 e I.3 — Planilhas de Bombeamento, Recuperação (73,1%) e Jacob/Cooper-Jacob', 'Anexo Técnico'],
-      ],
-      theme: 'striped',
-      styles: { fontSize: 7.2, cellPadding: { top: 1.2, right: 2, bottom: 1.2, left: 2 } },
-      columnStyles: {
-        0: { cellWidth: 145 },
-        1: { cellWidth: 37, halign: 'center', fontStyle: 'bold' },
-      },
-    });
-  }
-
-  /**
-   * 2. CORPO TÉCNICO DO RELATÓRIO (INICIADO EM NOVA PÁGINA SEPARADA DA FOLHA DE ROSTO)
-   * Renderiza as seções técnicas numeradas de 1 a 10 utilizando `jspdf-autotable`.
-   */
-  public renderizarCorpoTecnico(): void {
-    // Separação estrita entre Folha de Rosto (Página 1) e Corpo Técnico (Página 2+)
-    this.adicionarPaginaCorpoTecnico();
-
-    const vis = this.relatorio.secoesVisiveis;
-
-    // SEÇÃO 1: IDENTIFICAÇÃO DO SERVIÇO
-    if (vis?.informacoesGerais !== false) {
-      this.desenharBarraSecao('1. IDENTIFICAÇÃO DO SERVIÇO');
-      this.renderizarTabelaPares2Colunas([
-        [
-          'Nº da OS',
-          valOuPreencherPDF(this.relatorio.cabecalho.contratoOS, 'OS-2026-0842 / CTR-119'),
-          'Contrato / Ref',
-          valOuPreencherPDF(this.relatorio.cabecalho.contratoRef, 'CTR-119 / 2026'),
-        ],
-        [
-          'Data Execução',
-          formatarDataBR(this.relatorio.cabecalho.dataExecucao),
-          'Status Final',
-          valOuPreencherPDF(this.relatorio.cabecalho.statusOS, 'Concluído'),
-        ],
-        [
-          'Tipo de Serviço',
-          valOuPreencherPDF(this.relatorio.cabecalho.tipoServico),
-          'Resp. Técnico',
-          this.respTecnicoFormatado,
-        ],
-      ]);
-    }
-
-    // SEÇÃO 2: CLIENTE E LOCAL
+    // SEÇÃO 3: CLIENTE E LOCAL (AGORA NA PÁGINA 1)
     if (vis?.clienteLocal !== false) {
-      this.desenharBarraSecao('2. CLIENTE E LOCAL');
+      this.desenharBarraSecao('3. CLIENTE E LOCAL');
       this.renderizarTabelaPares2Colunas([
-        [
-          'Cliente Mandante',
-          valOuPreencherPDF(this.relatorio.cabecalho.cliente),
-          'CNPJ / CPF',
-          valOuPreencherPDF(this.relatorio.cabecalho.clienteCNPJ),
-        ],
         [
           'Local da Obra',
           valOuPreencherPDF(this.relatorio.cabecalho.localizacao),
@@ -1169,18 +1270,13 @@ export class RelatorioPDFExporter {
             '[DADO A PREENCHER EM CAMPO]'
           ),
         ],
-        [
-          'Contato Local',
-          valOuPreencherPDF(this.relatorio.cabecalho.contatoLocal),
-          'Telefone',
-          valOuPreencherPDF(this.relatorio.cabecalho.telefoneContato),
-        ],
       ]);
+      this.desenharBlocoMapaLocalizacaoPDF();
     }
 
-    // SEÇÃO 3: INFORMAÇÕES DO POÇO
+    // SEÇÃO 4: INFORMAÇÕES DO POÇO (AGORA NA PÁGINA 1)
     if (vis?.informacoesPoco !== false) {
-      this.desenharBarraSecao('3. INFORMAÇÕES DO POÇO');
+      this.desenharBarraSecao('4. INFORMAÇÕES DO POÇO');
       this.renderizarTabelaPares2Colunas([
         [
           'Poço (TAG)',
@@ -1243,19 +1339,18 @@ export class RelatorioPDFExporter {
           this.relatorio.dadosPoco?.painelEletrico
         )} (${painelEst})`
       );
-
-      this.renderizarQuadroTextoTecnico(
-        'Perfil Litológico e Hidroestratigráfico Resumido',
-        valOuPreencherPDF(
-          this.relatorio.dadosPoco?.perfilLitologico,
-          '0,00 a 18,00 m: Solo argilo-arenoso avermelhado; 18,00 a 112,00 m: Basalto compacto a vesicular fraturado (Formação Serra Geral); 112,00 a 160,00 m: Arenito fino a médio rosado (Sistema Aquífero Guarani / Formação Botucatu).'
-        )
-      );
     }
+  }
 
-    // SEÇÃO 4: DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO
+  public renderizarCorpoTecnico(): void {
+    // Inicia a Página 2 diretamente na Seção 5
+    this.adicionarPaginaCorpoTecnico();
+
+    const vis = this.relatorio.secoesVisiveis;
+
+    // SEÇÃO 5: DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO
     if (vis?.desenhoConstrutivo !== false) {
-      this.desenharBarraSecao('4. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO');
+      this.desenharBarraSecao('5. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO');
       this.renderizarQuadroTextoTecnico(
         'Especificação Construtiva, Cimentação Sanitária (0-24m) e Laje de Proteção (ABNT NBR 12212 / 12244)',
         valOuPreencherPDF(
@@ -1265,11 +1360,11 @@ export class RelatorioPDFExporter {
       );
     }
 
-    // SEÇÃO 5: SERVIÇOS TÉCNICOS EXECUTADOS
+    // SEÇÃO 6: SERVIÇOS TÉCNICOS EXECUTADOS
     if (vis?.servicosExecutados !== false) {
-      this.desenharBarraSecao('5. SERVIÇOS TÉCNICOS EXECUTADOS');
+      this.desenharBarraSecao('6. SERVIÇOS TÉCNICOS EXECUTADOS');
       this.renderizarQuadroTextoTecnico(
-        '5.1 Memorial Descritivo (Objetivo, Perfuração, Desenvolvimento Air-Lift, Teste 24h e Comissionamento)',
+        '6.1 Memorial Descritivo (Objetivo, Perfuração, Desenvolvimento Air-Lift, Teste 24h e Comissionamento)',
         valOuPreencherPDF(this.relatorio.descricaoServico)
       );
 
@@ -1278,22 +1373,24 @@ export class RelatorioPDFExporter {
       );
       if (servicosValidos.length > 0) {
         this.executarAutoTable({
-          head: [['#', '5.2 Descrição dos Serviços Conduzidos', 'Qtd', 'Status']],
+          head: [['#', '6.2 Descrição dos Serviços Conduzidos', 'Unidade', 'Qtd', 'Status']],
           body: servicosValidos.map((srv, idx) => [
             String(idx + 1),
             valOuPreencherPDF(srv.descricao),
+            valOuPreencherPDF(srv.unidade, 'UN'),
             valOuPreencherPDF(srv.quantidade, '1'),
             {
               content: valOuPreencherPDF(srv.status, 'Executado'),
-              styles: { fontStyle: 'bold', textColor: this.config.cores.green },
+              styles: { fontStyle: 'bold', textColor: this.config.cores.green, halign: 'center' },
             },
           ]),
           theme: 'grid',
           columnStyles: {
             0: { cellWidth: 10, halign: 'center' },
-            1: { cellWidth: 124 },
+            1: { cellWidth: 104 },
             2: { cellWidth: 20, halign: 'center' },
-            3: { cellWidth: 28, halign: 'center' },
+            3: { cellWidth: 18, halign: 'center' },
+            4: { cellWidth: 30, halign: 'center' },
           },
         });
       }
@@ -1303,7 +1400,7 @@ export class RelatorioPDFExporter {
       );
       if (equipeValida.length > 0) {
         this.executarAutoTable({
-          head: [['#', '5.3 Profissional / Equipe Técnica Mobilizada', 'Função / Atribuição em Campo']],
+          head: [['#', '6.3 Profissional / Equipe Técnica Mobilizada', 'Função / Atribuição em Campo']],
           body: equipeValida.map((m, idx) => [
             String(idx + 1),
             {
@@ -1326,7 +1423,7 @@ export class RelatorioPDFExporter {
       );
       if (materiaisValidos.length > 0) {
         this.executarAutoTable({
-          head: [['#', '5.4 Materiais e Insumos Aplicados no Poço', 'Unidade', 'Qtd', 'Situação']],
+          head: [['#', '6.4 Materiais e Insumos Aplicados no Poço', 'Unidade', 'Qtd', 'Situação']],
           body: materiaisValidos.map((m, idx) => [
             String(idx + 1),
             valOuPreencherPDF(m.descricao),
@@ -1349,9 +1446,9 @@ export class RelatorioPDFExporter {
       }
     }
 
-    // SEÇÃO 6: PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO (COM FÓRMULAS EM FORMATO DE LIVRO)
+    // SEÇÃO 7: PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO (COM FÓRMULAS EM FORMATO DE LIVRO)
     if (vis?.parecerHidrogeologico !== false) {
-      this.desenharBarraSecao('6. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO');
+      this.desenharBarraSecao('7. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO');
       const equacoesRelatorio = construirEquacoesLivroRelatorio(this.relatorio);
       equacoesRelatorio.secao6.forEach((eqSpec) => {
         this.renderizarBlocoEquacaoLivro(eqSpec, false);
@@ -1365,9 +1462,9 @@ export class RelatorioPDFExporter {
       );
     }
 
-    // SEÇÃO 7: CHECKLIST DE CONFORMIDADE E SEGURANÇA
+    // SEÇÃO 8: CHECKLIST DE CONFORMIDADE E SEGURANÇA
     if (vis?.checklist !== false && this.relatorio.checklist && this.relatorio.checklist.length > 0) {
-      this.desenharBarraSecao('7. CHECKLIST DE CONFORMIDADE E SEGURANÇA');
+      this.desenharBarraSecao('8. CHECKLIST DE CONFORMIDADE E SEGURANÇA');
       this.executarAutoTable({
         head: [['Item de Verificação Normativa (ABNT / NR)', 'Data', 'Observação Técnica', 'Status']],
         body: this.relatorio.checklist.map((item) => [
@@ -1405,19 +1502,19 @@ export class RelatorioPDFExporter {
       });
     }
 
-    // SEÇÃO 8: RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO
+    // SEÇÃO 9: RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO
     if (vis?.recomendacoes !== false) {
-      this.desenharBarraSecao('8. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO');
+      this.desenharBarraSecao('9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO');
       const oc = this.relatorio.ocorrenciasCampo;
       this.renderizarQuadroTextoTecnico(
-        '8.1 Diretrizes Operacionais, Monitoramento e Manutenção Preventiva',
+        '9.1 Diretrizes Operacionais, Monitoramento e Manutenção Preventiva',
         valOuPreencherPDF(
           oc?.recomendacoes,
           '1. Manter a operação na vazão recomendada de 10,29 m³/h e bomba instalada a 84,00 m.\n2. Monitorar mensalmente NE, ND, hidrômetro e parâmetros elétricos.\n3. Realizar análise físico-química e microbiológica semestral (Portaria GM/MS nº 888/2021).'
         )
       );
       this.renderizarQuadroTextoTecnico(
-        '8.2 Observações Técnicas e Unificação Documental',
+        '9.2 Observações Técnicas e Unificação Documental',
         valOuPreencherPDF(
           oc?.observacoesGerais,
           'Unificados todos os parâmetros pelo Teste Contínuo 24h a vazão constante de 13/03/2026 (NE = 22,40 m, ND = 64,10 m, Q = 10,29 m³/h, Bomba = 84,00 m). Nenhuma pendência remanescente.'
@@ -1425,12 +1522,12 @@ export class RelatorioPDFExporter {
       );
     }
 
-    // SEÇÃO 9: REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS
+    // SEÇÃO 10: REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS
     const fotosOrdenadas = [...this.relatorio.fotos].sort(
       (a, b) => a.ordem - b.ordem
     );
     if (vis?.fotos !== false && fotosOrdenadas.length > 0) {
-      this.desenharBarraSecao('9. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS', 46);
+      this.desenharBarraSecao('10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS', 46);
 
       const { esquerdaMm } = this.config.margens;
       const { navy, textDark } = this.config.cores;
@@ -1523,51 +1620,105 @@ export class RelatorioPDFExporter {
       this.cursorY += 2;
     }
 
-    // SEÇÃO 10: ASSINATURAS
+    // SEÇÃO 11: ASSINATURAS
     if (vis?.assinaturas !== false) {
-      this.desenharBarraSecao('10. ASSINATURAS', 38);
+      this.desenharBarraSecao('11. ASSINATURAS', 38);
       this.desenharBlocoAssinaturas();
     }
   }
 
-  private desenharBlocoAssinaturas(): void {
+private desenharBlocoAssinaturas(): void {
     const { esquerdaMm } = this.config.margens;
     const { larguraMm } = this.config.pagina;
     const { navy } = this.config.cores;
 
-    this.doc.setFillColor(250, 251, 253);
-    this.doc.setDrawColor(221, 227, 236);
-    this.doc.rect(esquerdaMm, this.cursorY, this.larguraUtil, 35, 'FD');
+    const textoDeclaracao = `Declaramos que os serviços referentes à ${valOuPreencherPDF(
+      this.relatorio.cabecalho.contratoOS
+    )} (Poço ${valOuPreencherPDF(
+      this.relatorio.dadosPoco?.pocoId,
+      'PT01'
+    )}) foram integralmente executados, comissionados e documentados segundo as normas ABNT NBR 12212 e NBR 12244.`;
 
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
     this.doc.setFontSize(7.5);
+
+    const linhasDeclaracao: string[] = this.doc.splitTextToSize(
+      textoDeclaracao,
+      this.larguraUtil - 8
+    );
+
+    const alturaTextoMm = linhasDeclaracao.length * 3.6;
+    const offsetAssinaturaY = Math.max(8.5, 4 + alturaTextoMm + 2);
+    const alturaTotalCaixaMm = offsetAssinaturaY + 26.5;
+
+    this.garantirEspacoVertical(alturaTotalCaixaMm + 2);
+
+    this.doc.setFillColor(250, 251, 253);
+    this.doc.setDrawColor(221, 227, 236);
+    this.doc.rect(esquerdaMm, this.cursorY, this.larguraUtil, alturaTotalCaixaMm, 'FD');
+
     this.doc.setTextColor(70, 80, 95);
     this.doc.text(
-      `Declaramos que os serviços referentes à ${valOuPreencherPDF(
-        this.relatorio.cabecalho.contratoOS
-      )} (Poço ${valOuPreencherPDF(
-        this.relatorio.dadosPoco?.pocoId,
-        'PT01'
-      )}) foram concluídos segundo as normas ABNT NBR 12212 e NBR 12244.`,
+      linhasDeclaracao,
       larguraMm / 2,
-      this.cursorY + 6,
+      this.cursorY + 5.5,
       { align: 'center' }
     );
 
     const sigW = (this.larguraUtil - 20) / 2;
+
+    // Imagens de rubrica/assinatura digital se presentes
+    if (this.relatorio.assinaturaResponsavel?.dataUrl) {
+      try {
+        const fmt = this.relatorio.assinaturaResponsavel.dataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        this.doc.addImage(
+          this.relatorio.assinaturaResponsavel.dataUrl,
+          fmt,
+          esquerdaMm + 4 + (sigW - 32) / 2,
+          this.cursorY + offsetAssinaturaY,
+          32,
+          8.5,
+          undefined,
+          'FAST'
+        );
+      } catch {
+        // Fallback silencioso
+      }
+    }
+
+    if (this.relatorio.assinaturaCliente?.dataUrl) {
+      try {
+        const fmt = this.relatorio.assinaturaCliente.dataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        this.doc.addImage(
+          this.relatorio.assinaturaCliente.dataUrl,
+          fmt,
+          larguraMm - esquerdaMm - 4 - sigW + (sigW - 32) / 2,
+          this.cursorY + offsetAssinaturaY,
+          32,
+          8.5,
+          undefined,
+          'FAST'
+        );
+      } catch {
+        // Fallback silencioso
+      }
+    }
+
+    const linhaAssinaturaY = this.cursorY + offsetAssinaturaY + 9.5;
+
     this.doc.setDrawColor(...navy);
     this.doc.setLineWidth(0.35);
     this.doc.line(
       esquerdaMm + 4,
-      this.cursorY + 18,
+      linhaAssinaturaY,
       esquerdaMm + 4 + sigW,
-      this.cursorY + 18
+      linhaAssinaturaY
     );
     this.doc.line(
       larguraMm - esquerdaMm - 4 - sigW,
-      this.cursorY + 18,
+      linhaAssinaturaY,
       larguraMm - esquerdaMm - 4,
-      this.cursorY + 18
+      linhaAssinaturaY
     );
 
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
@@ -1576,16 +1727,13 @@ export class RelatorioPDFExporter {
     this.doc.text(
       this.respTecnicoFormatado,
       esquerdaMm + 4 + sigW / 2,
-      this.cursorY + 22.5,
+      linhaAssinaturaY + 4.5,
       { align: 'center' }
     );
     this.doc.text(
-      `Fiscal do Cliente: ${valOuPreencherPDF(
-        this.relatorio.assinaturaCliente?.nomeSignatario,
-        '[DADO A PREENCHER EM CAMPO]'
-      )}`,
+      `${this.respElaboracaoNome}`,
       larguraMm - esquerdaMm - 4 - sigW / 2,
-      this.cursorY + 22.5,
+      linhaAssinaturaY + 4.5,
       { align: 'center' }
     );
 
@@ -1593,32 +1741,19 @@ export class RelatorioPDFExporter {
     this.doc.setFontSize(7);
     this.doc.setTextColor(90, 100, 115);
     this.doc.text(
-      'Engenheiro Geólogo / Hidrogeólogo Sênior',
+      'Responsável Técnico — Engenheiro Geólogo / Hidrogeólogo',
       esquerdaMm + 4 + sigW / 2,
-      this.cursorY + 26.5,
+      linhaAssinaturaY + 8.5,
       { align: 'center' }
     );
     this.doc.text(
-      valOuPreencherPDF(
-        this.relatorio.assinaturaCliente?.funcao,
-        'Representante / Fiscal — Agroindustrial Vale do Rio Pardo S/A'
-      ),
+      this.respElaboracaoCargo,
       larguraMm - esquerdaMm - 4 - sigW / 2,
-      this.cursorY + 26.5,
+      linhaAssinaturaY + 8.5,
       { align: 'center' }
     );
 
-    this.doc.text(
-      `Local e Data: ${valOuPreencherPDF(
-        this.relatorio.cabecalho.cidadeUF,
-        'Ribeirão Preto - SP'
-      )}, ${formatarDataBR(this.relatorio.cabecalho.dataExecucao)}`,
-      larguraMm / 2,
-      this.cursorY + 31.8,
-      { align: 'center' }
-    );
-
-    this.cursorY += 38;
+    this.cursorY += alturaTotalCaixaMm + 3;
   }
 
   /**
@@ -1626,9 +1761,56 @@ export class RelatorioPDFExporter {
    * Utiliza `jspdf-autotable` para todas as planilhas hidrodinâmicas e desenha os gráficos semi-log vetoriais.
    */
   public renderizarAnexosTesteBombeamento(iniciarEmNovaPagina = true): void {
-    const teste = this.relatorio.dadosPoco.testeVazaoSEMA;
+    const teste = this.relatorio.dadosPoco?.testeVazaoSEMA || {
+      ativo: true,
+      tipoEnsaio: 'Contínuo 24h a Vazão Constante',
+      etapaLabel: '24H',
+      referenciaMedidasM: '0,00',
+      responsavelTecnicoNome: this.respTecnicoNome,
+      responsavelTecnicoCREA: this.respTecnicoCREA,
+      responsavelTecnicoCPF: '',
+      artNumero: '[DADO A PREENCHER EM CAMPO]',
+      dataInicioEnsaio: this.relatorio.cabecalho.dataExecucao || '2026-03-13',
+      horaInicioBombeamento: '11:30:00',
+      dataFinalBombeamento: this.relatorio.cabecalho.dataExecucao || '2026-03-13',
+      horaFinalBombeamento: '18:10:00',
+      dataInicioRecuperacao: this.relatorio.cabecalho.dataExecucao || '2026-03-13',
+      horaInicioRecuperacao: '18:10:00',
+      dataFinalRecuperacao: this.relatorio.cabecalho.dataExecucao || '2026-03-13',
+      horaFinalRecuperacao: '18:45:00',
+      tempoRecuperacaoMinutos: '35',
+      nivelRecuperacaoFinalM: '33,60',
+      vazaoOutorgaRecomendadaM3h: '10,29',
+      regimeBombeamentoHorasDia: '16',
+      etapas: this.relatorio.dadosPoco?.testeVazaoSEMA?.etapas || [
+        {
+          id: 'step-1',
+          etapa: 1,
+          duracaoMinutos: 120,
+          vazaoM3h: '6,50',
+          nivelDinamicoM: '46,20',
+          observacao: '1ª Etapa Escalonada — Regime Laminar Predominante',
+        },
+        {
+          id: 'step-2',
+          etapa: 2,
+          duracaoMinutos: 120,
+          vazaoM3h: '8,40',
+          nivelDinamicoM: '54,80',
+          observacao: '2ª Etapa Escalonada — Transição Hidrodinâmica',
+        },
+        {
+          id: 'step-3',
+          etapa: 3,
+          duracaoMinutos: 240,
+          vazaoM3h: '10,29',
+          nivelDinamicoM: '64,10',
+          observacao: '3ª Etapa Nominal Estabilizada — Vazão Recomendada (24h)',
+        },
+      ],
+    };
     const calc = calcularParametrosStepDrawdownSEMA(
-      this.relatorio.dadosPoco.nivelEstatico,
+      this.relatorio.dadosPoco?.nivelEstatico || '22,40 m',
       teste
     );
 
@@ -1653,13 +1835,13 @@ export class RelatorioPDFExporter {
           `Cliente: ${valOuPreencherPDF(this.relatorio.cabecalho.cliente).slice(0, 42)}  |  O.S.: ${valOuPreencherPDF(
             this.relatorio.cabecalho.contratoOS
           )}  |  Poço: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco.pocoId,
+            this.relatorio.dadosPoco?.pocoId,
             'PT01'
           )}  |  N.E.: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco.nivelEstatico,
+            this.relatorio.dadosPoco?.nivelEstatico,
             '22,40 m'
           )}  |  Bomba: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco.profundidadeBomba,
+            this.relatorio.dadosPoco?.profundidadeBomba,
             '84,00 m'
           )}`,
         ],
@@ -1783,8 +1965,8 @@ export class RelatorioPDFExporter {
     this.executarAutoTable({
       body: [
         [
-          `Poço: ${valOuPreencherPDF(this.relatorio.dadosPoco.pocoId, 'PT01')}  |  N.E.: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco.nivelEstatico,
+          `Poço: ${valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, 'PT01')}  |  N.E.: ${valOuPreencherPDF(
+            this.relatorio.dadosPoco?.nivelEstatico,
             '22,40 m'
           )}  |  ND máx: 64,10 m (s = 41,70 m)  |  Recuperação Real Recalculada (35 min): ${fmtNumeroSEMA(
             calc.percentualRecuperacao,
@@ -2174,8 +2356,6 @@ export class RelatorioPDFExporter {
     const { larguraMm } = this.config.pagina;
     const { esquerdaMm } = this.config.margens;
     const {
-      cidadeSedePadrao,
-      normasTecnicasPadrao,
       exibirNumeracaoNaFolhaDeRosto,
       alturaFaixaMm,
       posicaoYTextoMm,
@@ -2211,11 +2391,15 @@ export class RelatorioPDFExporter {
 
       const sufixoPaginacao =
         isFolhaDeRosto && !exibirNumeracaoNaFolhaDeRosto
-          ? 'Folha de Rosto Institucional (ABNT NBR 10719)'
+          ? ''
           : `Página ${i} de ${totalPages}`;
 
+      const textoRodape = sufixoPaginacao
+        ? `${this.razaoEmpresa} | ${sufixoPaginacao}`
+        : this.razaoEmpresa;
+
       this.doc.text(
-        `${this.razaoEmpresa} | ${cidadeSedePadrao} | ${normasTecnicasPadrao} | ${sufixoPaginacao}`,
+        textoRodape,
         larguraMm / 2,
         posicaoYTextoMm,
         { align: 'center' }
@@ -2237,7 +2421,7 @@ export class RelatorioPDFExporter {
     this.renderizarCorpoTecnico();
 
     // 3. Anexos de Teste de Bombeamento (Anexos I.1, I.2 e I.3), se ativos
-    if (this.relatorio.dadosPoco?.testeVazaoSEMA?.ativo && this.relatorio.secoesVisiveis?.anexos !== false) {
+    if (this.relatorio.secoesVisiveis?.anexos !== false && this.relatorio.dadosPoco?.testeVazaoSEMA?.ativo !== false) {
       this.renderizarAnexosTesteBombeamento(true);
     }
 

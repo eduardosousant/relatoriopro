@@ -34,6 +34,10 @@ export interface DadosCabecalho {
   telefoneContato?: string;
   dataExecucao: string;
   logoBase64?: string;
+  responsavelTecnicoNome?: string;
+  responsavelTecnicoCREA?: string;
+  responsavelElaboracaoNome?: string;
+  responsavelElaboracaoCargo?: string;
 }
 
 /**
@@ -169,6 +173,7 @@ export interface MembroEquipe {
 export interface ItemServicoConduzido {
   id: string;
   descricao: string;
+  unidade?: string;
   quantidade: string;
   status: 'Executado' | 'Pendente' | 'Cancelado';
 }
@@ -249,4 +254,5 @@ export type SecaoNavegacao =
   | 'checklist'
   | 'fotos'
   | 'ocorrencias'
+  | 'assinaturas'
   | 'preview';

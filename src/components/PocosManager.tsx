@@ -2,6 +2,7 @@ import React, { useState, useRef } from 'react';
 import { CadastroPoco, RelatorioTecnico } from '../types/relatorio';
 import { formatarDataBR } from '../services/pdfExportService';
 import { PocoHydroChart } from './PocoHydroChart';
+import { PocoLocationMap } from './PocoLocationMap';
 import {
   Plus,
   Search,
@@ -323,7 +324,7 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
 
               <div className="sm:col-span-2">
                 <label className="block text-[11px] font-bold uppercase text-[#6B7A8D] mb-1">
-                  Coordenadas UTM / Geográficas
+                  Coordenadas UTM / Geográficas (Lat/Lon)
                 </label>
                 <input
                   type="text"
@@ -331,8 +332,29 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
                   onChange={(e) =>
                     setFormPoco({ ...formPoco, coordenadasUTM: e.target.value })
                   }
-                  placeholder="Ex: X=641520, Y=8612400 (Zona 21L)"
+                  placeholder="Ex: LAT -15.6014 LON -56.0979 ou Zona 21L"
                   className="w-full px-3 py-2 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950"
+                />
+              </div>
+
+              <div className="sm:col-span-4">
+                <PocoLocationMap
+                  coordenadasGeograficas={formPoco.coordenadasUTM}
+                  coordenadasUTM={formPoco.coordenadasUTM}
+                  pocoTag={formPoco.tag}
+                  cliente={formPoco.cliente}
+                  localizacao={formPoco.enderecoLocal}
+                  cidadeUF={formPoco.cidadeUF}
+                  variant="compact"
+                  onChangeCoordenadas={({
+                    coordenadasGeograficas,
+                    coordenadasUTM,
+                  }) =>
+                    setFormPoco((prev) => ({
+                      ...prev,
+                      coordenadasUTM: `${coordenadasGeograficas} | ${coordenadasUTM}`,
+                    }))
+                  }
                 />
               </div>
 

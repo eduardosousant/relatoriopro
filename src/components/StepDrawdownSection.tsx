@@ -17,6 +17,7 @@ import {
   EtapaStepDrawdownSEMA,
   LeituraBombeamentoGeoeste,
   LeituraRecuperacaoGeoeste,
+  RelatorioTecnico,
 } from '../types/relatorio';
 import {
   Activity,
@@ -30,7 +31,15 @@ import {
   Clock,
   FileDown,
   CopyCheck,
+  Zap,
+  Upload,
+  Download,
+  FileSpreadsheet,
+  History,
 } from 'lucide-react';
+import { ModalSimuladorTeste } from './ModalSimuladorTeste';
+import { ModalImportadorPlanilha } from './ModalImportadorPlanilha';
+import { ModalReaproveitarTeste } from './ModalReaproveitarTeste';
 
 export interface EtapaCalculadaSEMA {
   id: string;
@@ -708,6 +717,7 @@ interface StepDrawdownSectionProps {
   onChangeTesteSEMA: (novoTeste: DadosTesteVazaoSEMA) => void;
   onSincronizarComDadosPoco: (ndFinal: string, vazaoFinal: string) => void;
   onExportarPDFTesteBombeamento?: () => void;
+  relatoriosAnteriores?: RelatorioTecnico[];
 }
 
 export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
@@ -715,10 +725,14 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
   onChangeTesteSEMA,
   onSincronizarComDadosPoco,
   onExportarPDFTesteBombeamento,
+  relatoriosAnteriores = [],
 }) => {
   const [abaAtiva, setAbaAtiva] = useState<
     'bombeamento' | 'recuperacao' | 'interpretacao'
   >('bombeamento');
+  const [modalSimuladorAberto, setModalSimuladorAberto] = useState(false);
+  const [modalImportadorAberto, setModalImportadorAberto] = useState(false);
+  const [modalReaproveitarAberto, setModalReaproveitarAberto] = useState(false);
 
   const neBaseNumero = parseNumeroSEMA(dadosPoco.nivelEstatico) ?? 22.4;
 
@@ -777,6 +791,41 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
       ...testeAtual,
       [campo]: valor,
     });
+  };
+
+  const handleAplicarSimulacao = (dados: {
+    leiturasBombeamento: LeituraBombeamentoGeoeste[];
+    leiturasRecuperacao: LeituraRecuperacaoGeoeste[];
+    etapas: EtapaStepDrawdownSEMA[];
+    etapaLabel: string;
+    vazaoRecomendada: string;
+    nivelRecuperacaoFinal: string;
+  }) => {
+    onChangeTesteSEMA({
+      ...testeAtual,
+      ativo: true,
+      etapaLabel: dados.etapaLabel,
+      vazaoOutorgaRecomendadaM3h: dados.vazaoRecomendada,
+      nivelRecuperacaoFinalM: dados.nivelRecuperacaoFinal,
+      leiturasBombeamento: dados.leiturasBombeamento,
+      leiturasRecuperacao: dados.leiturasRecuperacao,
+      etapas: dados.etapas,
+    });
+  };
+
+  const handleImportarBombeamento = (leituras: LeituraBombeamentoGeoeste[]) => {
+    atualizarCampoTeste('leiturasBombeamento', leituras);
+  };
+
+  const handleImportarRecuperacao = (leituras: LeituraRecuperacaoGeoeste[]) => {
+    atualizarCampoTeste('leiturasRecuperacao', leituras);
+  };
+
+  const handleReaproveitarTeste = (
+    testeClonado: DadosTesteVazaoSEMA,
+    _resumoOrigem: string
+  ) => {
+    onChangeTesteSEMA(testeClonado);
   };
 
   // Carrega os dados consolidados e corrigidos do Poço PT01 (OS-2026-0842 / CTR-119)
@@ -1002,25 +1051,60 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
               className="px-3.5 py-2 text-xs font-bold rounded-lg bg-[#1B2A3B] hover:bg-[#243447] text-[#E8A020] flex items-center gap-1.5 shadow-xs"
             >
               <FileDown className="w-4 h-4" />
-              Exportar PDF
+              PDF
             </button>
           )}
         </div>
       </div>
 
       {!testeAtual.ativo ? (
-        <div className="p-5 rounded-xl border border-dashed border-[#DDE3EC] dark:border-slate-800 bg-[#F7F9FC] dark:bg-slate-950 flex flex-col sm:flex-row items-center justify-between gap-4">
+        <div className="p-5 rounded-xl border border-dashed border-[#DDE3EC] dark:border-slate-800 bg-[#F7F9FC] dark:bg-slate-950 flex flex-col lg:flex-row items-center justify-between gap-4">
           <div className="text-xs text-[#6B7A8D] dark:text-slate-400">
             Ative o <strong>Relatório Especializado de Teste de Bombeamento</strong> para preencher as leituras de rebaixamento, recuperação e gerar os gráficos semi-logarítmicos `s(m) × t(min)` e de interpretação `s/Q × Q`.
           </div>
-          <button
-            type="button"
-            onClick={carregarExemploUFMTGeoeste}
-            className="px-4 py-2 text-xs font-bold rounded-lg bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] flex items-center gap-1.5 whitespace-nowrap shrink-0"
-          >
-            <Sparkles className="w-3.5 h-3.5" />
-            Ativar com Dados
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                atualizarCampoTeste('ativo', true);
+                setModalSimuladorAberto(true);
+              }}
+              className="px-3.5 py-2 text-xs font-bold rounded-lg bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] flex items-center gap-1.5 shadow-xs"
+            >
+              <Zap className="w-3.5 h-3.5 fill-current" />
+              Simular Teste (Cooper-Jacob)
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                atualizarCampoTeste('ativo', true);
+                setModalImportadorAberto(true);
+              }}
+              className="px-3 py-2 text-xs font-semibold rounded-lg bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] text-[#1B2A3B] dark:text-slate-200 flex items-center gap-1.5"
+            >
+              <Upload className="w-3.5 h-3.5 text-sky-600" />
+              Importar Planilha / CSV
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                atualizarCampoTeste('ativo', true);
+                setModalReaproveitarAberto(true);
+              }}
+              className="px-3 py-2 text-xs font-semibold rounded-lg bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] text-[#1B2A3B] dark:text-slate-200 flex items-center gap-1.5"
+            >
+              <History className="w-3.5 h-3.5 text-emerald-600" />
+              Reaproveitar Anterior
+            </button>
+            <button
+              type="button"
+              onClick={carregarExemploUFMTGeoeste}
+              className="px-3 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3 h-3 text-[#E8A020]" />
+              Dados Padrão
+            </button>
+          </div>
         </div>
       ) : (
         <div className="space-y-5">
@@ -1160,6 +1244,36 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
             <div className="flex flex-wrap items-center gap-2">
               <button
                 type="button"
+                onClick={() => setModalSimuladorAberto(true)}
+                className="px-2.5 py-2 text-[11px] font-bold rounded-lg bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] flex items-center gap-1 shadow-xs cursor-pointer"
+                title="Simulador hidrogeológico Cooper-Jacob & Theis: gera leituras e degraus com base em NE, ND e Vazão"
+              >
+                <Zap className="w-3.5 h-3.5 fill-current shrink-0" />
+                <span>⚡ Simular Teste</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setModalImportadorAberto(true)}
+                className="px-2.5 py-2 text-[11px] font-semibold rounded-lg bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] text-[#1B2A3B] dark:text-slate-200 flex items-center gap-1 cursor-pointer"
+                title="Importar leituras de arquivo CSV, TXT ou colar dados do Excel"
+              >
+                <Upload className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                <span>Importar Planilha</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setModalReaproveitarAberto(true)}
+                className="px-2.5 py-2 text-[11px] font-semibold rounded-lg bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] text-[#1B2A3B] dark:text-slate-200 flex items-center gap-1 cursor-pointer"
+                title="Copiar ensaio completo de um relatório anterior deste poço ou cliente"
+              >
+                <History className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                <span>Reaproveitar Anterior</span>
+              </button>
+
+              <button
+                type="button"
                 onClick={carregarExemploUFMTGeoeste}
                 className="px-2.5 py-2 text-[11px] font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] flex items-center gap-1"
               >
@@ -1196,9 +1310,20 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
               {/* Planilha de Bombeamento (Coluna Esquerda - 7 cols em 2XL) */}
               <div className="2xl:col-span-7 space-y-3 min-w-0">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
-                    Planilha de Teste de Bombeamento ({resultado.leiturasBombeamentoCalc.length} leituras)
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
+                      Planilha de Teste de Bombeamento ({resultado.leiturasBombeamentoCalc.length} leituras)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setModalImportadorAberto(true)}
+                      className="px-2 py-0.5 text-[10.5px] font-semibold rounded border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] text-sky-600 dark:text-sky-400 flex items-center gap-1"
+                      title="Importar CSV para Bombeamento"
+                    >
+                      <Upload className="w-3 h-3" />
+                      <span>Upload CSV</span>
+                    </button>
+                  </div>
                   <span className="text-[11px] text-[#6B7A8D]">
                     Dica: clique em <CopyCheck className="w-3.5 h-3.5 inline text-[#E8A020]" /> para repetir o nível estabilizado até o final
                   </span>
@@ -1424,10 +1549,21 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
             <div className="grid grid-cols-1 2xl:grid-cols-12 gap-6 items-start">
               {/* Planilha de Recuperação (Coluna Esquerda - 7 cols em 2XL) */}
               <div className="2xl:col-span-7 space-y-3 min-w-0">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
-                    Planilha de Recuperação ({resultado.leiturasRecuperacaoCalc.length} leituras)
-                  </span>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
+                      Planilha de Recuperação ({resultado.leiturasRecuperacaoCalc.length} leituras)
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setModalImportadorAberto(true)}
+                      className="px-2 py-0.5 text-[10.5px] font-semibold rounded border border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] text-sky-600 dark:text-sky-400 flex items-center gap-1"
+                      title="Importar CSV para Recuperação"
+                    >
+                      <Upload className="w-3 h-3" />
+                      <span>Upload CSV</span>
+                    </button>
+                  </div>
                   <span className="text-[11px] font-mono text-[#27AE60] font-bold">
                     Recuperação real recalculada (35 min):{' '}
                     {fmtNumeroSEMA(resultado.percentualRecuperacao, 1, '%')}
@@ -1957,6 +2093,33 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
           )}
         </div>
       )}
+
+      {/* Modais de Simulação Hidrogeológica e Importação de Planilhas / CSV */}
+      <ModalSimuladorTeste
+        isOpen={modalSimuladorAberto}
+        onClose={() => setModalSimuladorAberto(false)}
+        neAtual={dadosPoco.nivelEstatico || '22,40'}
+        ndAtual={dadosPoco.nivelDinamico || '64,10'}
+        vazaoAtual={testeAtual.vazaoOutorgaRecomendadaM3h || dadosPoco.vazaoTeste || '10,29'}
+        onAplicarSimulacao={handleAplicarSimulacao}
+      />
+
+      <ModalImportadorPlanilha
+        isOpen={modalImportadorAberto}
+        onClose={() => setModalImportadorAberto(false)}
+        neBase={neBaseNumero}
+        onImportarBombeamento={handleImportarBombeamento}
+        onImportarRecuperacao={handleImportarRecuperacao}
+      />
+
+      <ModalReaproveitarTeste
+        isOpen={modalReaproveitarAberto}
+        onClose={() => setModalReaproveitarAberto(false)}
+        relatoriosAnteriores={relatoriosAnteriores}
+        pocoIdAtual={dadosPoco.pocoId}
+        neAtualStr={dadosPoco.nivelEstatico || '22,40'}
+        onReaproveitarTeste={handleReaproveitarTeste}
+      />
     </div>
   );
 };
