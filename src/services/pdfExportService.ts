@@ -13,6 +13,7 @@ import {
 import {
   extrairCoordenadasGeograficas,
   latLngParaUTM,
+  renderizarMapaOSMCanvasDataUrl,
 } from '../utils/coordenadasParser';
 
 export type RGBTuple = [number, number, number];
@@ -680,7 +681,7 @@ export class RelatorioPDFExporter {
   }
 
   /**
-   * Pré-captura a imagem estática do Google Maps para inclusão automática na Seção 3 do PDF
+   * Pré-captura a imagem de mapa OpenStreetMap / Esri Satélite para inclusão automática na Seção 3 do PDF
    */
   private async preCapturarMapaLocalizacao(): Promise<void> {
     const coord = extrairCoordenadasGeograficas(
@@ -691,29 +692,20 @@ export class RelatorioPDFExporter {
     if (!coord) return;
 
     try {
-      const label =
-        (this.relatorio.dadosPoco?.pocoId || 'P')
-          .replace(/[^A-Z0-9]/gi, '')
-          .charAt(0)
-          .toUpperCase() || 'P';
-      const resp = await fetch(
-        `/api/maps-static-image?lat=${coord.lat}&lng=${coord.lng}&zoom=16&maptype=hybrid&label=${label}`
-      );
-      if (resp.status === 429) {
-        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        return;
-      }
-      if (!resp.ok) return;
-      const json = await resp.json();
-      if (json?.quotaExceeded) {
-        window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        return;
-      }
-      if (json?.dataUrl) {
-        this.mapaLocalizacaoDataUrl = json.dataUrl;
+      const dataUrl = await renderizarMapaOSMCanvasDataUrl({
+        lat: coord.lat,
+        lng: coord.lng,
+        zoom: 16,
+        width: 860,
+        height: 160,
+        layer: 'satellite',
+        pocoTag: this.relatorio.dadosPoco?.pocoId || 'PT01',
+      });
+      if (dataUrl) {
+        this.mapaLocalizacaoDataUrl = dataUrl;
       }
     } catch {
-      // Fallback vetorial caso o servidor estático não esteja acessível
+      // Fallback vetorial caso o ambiente esteja offline
     }
   }
 

@@ -1,17 +1,8 @@
-import React, { useEffect, useState, useMemo } from 'react';
-import {
-  APIProvider,
-  Map as GoogleMap,
-  AdvancedMarker,
-  Pin,
-  InfoWindow,
-  useAdvancedMarkerRef,
-  useMap,
-  MapMouseEvent,
-} from '@vis.gl/react-google-maps';
+import React, { useEffect, useState, useMemo, useRef } from 'react';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import {
   MapPin,
-  Compass,
   Navigation,
   Layers,
   Crosshair,
@@ -22,95 +13,194 @@ import {
   formatarLatLngPadrao,
   latLngParaUTM,
   decimalParaDMS,
-  obterGoogleMapsApiKey,
 } from '../utils/coordenadasParser';
 
-interface MapCameraSyncProps {
+type CamadaMapa = 'hybrid' | 'roadmap' | 'terrain';
+
+function criarIconePocoLeaflet(tag: string, compact: boolean): L.DivIcon {
+  const size = compact ? 26 : 32;
+  const tagEscapada = (tag || 'PT01')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+
+  return L.divIcon({
+    className: 'relatorpro-poco-pin',
+    iconSize: [size, size + 10],
+    iconAnchor: [size / 2, size + 6],
+    popupAnchor: [0, -(size + 4)],
+    html: `
+      <div style="position:relative;display:flex;flex-direction:column;align-items:center;pointer-events:auto;">
+        <svg width="${size}" height="${size}" viewBox="0 0 36 36" fill="none" xmlns="http://www.w3.org/2000/svg" style="filter:drop-shadow(0 2px 4px rgba(0,0,0,0.45));">
+          <path d="M18 2C11.3726 2 6 7.37258 6 14C6 22.5 18 34 18 34C18 34 30 22.5 30 14C30 7.37258 24.6274 2 18 2Z" fill="#E8A020" stroke="#1B2A3B" stroke-width="2.6"/>
+          <circle cx="18" cy="14" r="5" fill="#1B2A3B"/>
+        </svg>
+        ${
+          !compact
+            ? `<span style="margin-top:-2px;background:#1B2A3B;color:#E8A020;font-family:monospace;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;border:1px solid #E8A020;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,0.35);">${tagEscapada}</span>`
+            : ''
+        }
+      </div>
+    `,
+  });
+}
+
+interface LeafletCanvasProps {
   lat: number;
   lng: number;
   zoom: number;
-}
-
-const MapCameraSync: React.FC<MapCameraSyncProps> = ({ lat, lng, zoom }) => {
-  const map = useMap();
-
-  useEffect(() => {
-    if (!map || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
-    map.panTo({ lat, lng });
-  }, [map, lat, lng]);
-
-  useEffect(() => {
-    if (!map || !Number.isFinite(zoom)) return;
-    map.setZoom(zoom);
-  }, [map, zoom]);
-
-  return null;
-};
-
-interface PocoMarkerWithInfoProps {
-  lat: number;
-  lng: number;
+  camada: CamadaMapa;
   pocoTag: string;
   cliente?: string;
   localizacao?: string;
   cidadeUF?: string;
+  interactive: boolean;
   compact?: boolean;
+  onMapClick?: (lat: number, lng: number) => void;
 }
 
-const PocoMarkerWithInfo: React.FC<PocoMarkerWithInfoProps> = ({
+const LeafletMapCanvas: React.FC<LeafletCanvasProps> = ({
   lat,
   lng,
+  zoom,
+  camada,
   pocoTag,
   cliente,
   localizacao,
   cidadeUF,
+  interactive,
   compact = false,
+  onMapClick,
 }) => {
-  const [markerRef, marker] = useAdvancedMarkerRef();
-  const [infoOpen, setInfoOpen] = useState(false);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const mapRef = useRef<L.Map | null>(null);
+  const markerRef = useRef<L.Marker | null>(null);
+  const baseLayersRef = useRef<L.LayerGroup | null>(null);
+  const onMapClickRef = useRef(onMapClick);
+  onMapClickRef.current = onMapClick;
 
-  return (
-    <>
-      <AdvancedMarker
-        ref={markerRef}
-        position={{ lat, lng }}
-        title={`Poço ${pocoTag || 'PT01'} (${lat.toFixed(6)}, ${lng.toFixed(6)})`}
-        onClick={() => setInfoOpen((prev) => !prev)}
-      >
-        <Pin
-          background="#E8A020"
-          borderColor="#1B2A3B"
-          glyphColor="#1B2A3B"
-          scale={compact ? 1.05 : 1.25}
-        />
-      </AdvancedMarker>
+  // Inicialização única do mapa Leaflet
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
 
-      {infoOpen && marker && !compact && (
-        <InfoWindow
-          anchor={marker}
-          maxWidth={260}
-          onCloseClick={() => setInfoOpen(false)}
-        >
-          <div className="text-slate-800 p-0.5 space-y-1 text-xs">
-            <div className="font-bold text-[#1B2A3B] flex items-center gap-1.5">
-              <span className="px-1.5 py-0.5 rounded bg-[#1B2A3B] text-[#E8A020] font-mono text-[10px]">
-                {pocoTag || 'PT01'}
-              </span>
-              <span className="truncate">{cliente || 'Poço Tubular Profundo'}</span>
-            </div>
-            {(localizacao || cidadeUF) && (
-              <div className="text-[11px] text-slate-600">
-                {[localizacao, cidadeUF].filter(Boolean).join(' • ')}
-              </div>
-            )}
-            <div className="font-mono text-[10.5px] text-slate-700 bg-slate-100 px-1.5 py-1 rounded">
-              Lat: {lat.toFixed(6)}° | Lon: {lng.toFixed(6)}°
-            </div>
+    const map = L.map(el, {
+      center: [lat, lng],
+      zoom,
+      zoomControl: false,
+      attributionControl: true,
+      dragging: interactive,
+      touchZoom: interactive,
+      doubleClickZoom: interactive,
+      scrollWheelZoom: interactive,
+      boxZoom: interactive,
+      keyboard: interactive,
+    });
+
+    map.attributionControl.setPrefix(false);
+
+    const layerGroup = L.layerGroup().addTo(map);
+    baseLayersRef.current = layerGroup;
+
+    const marker = L.marker([lat, lng], {
+      icon: criarIconePocoLeaflet(pocoTag, compact),
+    }).addTo(map);
+    markerRef.current = marker;
+
+    if (interactive) {
+      map.on('click', (ev: L.LeafletMouseEvent) => {
+        onMapClickRef.current?.(ev.latlng.lat, ev.latlng.lng);
+      });
+    }
+
+    mapRef.current = map;
+
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize({ animate: false });
+    });
+    ro.observe(el);
+
+    const t = window.setTimeout(() => {
+      map.invalidateSize({ animate: false });
+    }, 150);
+
+    return () => {
+      window.clearTimeout(t);
+      ro.disconnect();
+      map.remove();
+      mapRef.current = null;
+      markerRef.current = null;
+      baseLayersRef.current = null;
+    };
+  }, [interactive, compact]);
+
+  // Atualiza camada de tiles (Satélite Esri / Mapa OSM / Relevo OpenTopoMap)
+  useEffect(() => {
+    const group = baseLayersRef.current;
+    if (!group) return;
+    group.clearLayers();
+
+    if (camada === 'roadmap') {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '&copy; OpenStreetMap',
+      }).addTo(group);
+    } else if (camada === 'terrain') {
+      L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+        maxZoom: 17,
+        attribution: '&copy; OpenTopoMap • OSM',
+      }).addTo(group);
+    } else {
+      // Satélite Esri World Imagery + sobreposição de nomes de ruas/cidades
+      L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {
+          maxZoom: 19,
+          attribution: '&copy; Esri • OpenStreetMap',
+        }
+      ).addTo(group);
+      L.tileLayer(
+        'https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        {
+          maxZoom: 19,
+        }
+      ).addTo(group);
+    }
+  }, [camada]);
+
+  // Atualiza posição do centro, zoom, marcador e popup
+  useEffect(() => {
+    const map = mapRef.current;
+    const marker = markerRef.current;
+    if (!map || !marker || !Number.isFinite(lat) || !Number.isFinite(lng)) return;
+
+    map.setView([lat, lng], zoom, { animate: interactive });
+    marker.setLatLng([lat, lng]);
+    marker.setIcon(criarIconePocoLeaflet(pocoTag, compact));
+
+    if (interactive && !compact) {
+      const esc = (v?: string) =>
+        (v || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+      const localCompleto = [localizacao, cidadeUF].filter(Boolean).join(' • ');
+      marker.bindPopup(
+        `<div style="font-family:sans-serif;font-size:12px;min-width:180px;">
+          <div style="font-weight:700;color:#1B2A3B;margin-bottom:3px;">
+            <span style="background:#1B2A3B;color:#E8A020;padding:1px 5px;border-radius:3px;font-family:monospace;font-size:10px;margin-right:4px;">${esc(pocoTag || 'PT01')}</span>
+            ${esc(cliente || 'Poço Tubular Profundo')}
           </div>
-        </InfoWindow>
-      )}
-    </>
-  );
+          ${localCompleto ? `<div style="color:#475569;font-size:11px;margin-bottom:4px;">${esc(localCompleto)}</div>` : ''}
+          <div style="font-family:monospace;font-size:10.5px;background:#F1F5F9;padding:3px 6px;border-radius:4px;color:#0F172A;">
+            Lat: ${lat.toFixed(6)}° | Lon: ${lng.toFixed(6)}°
+          </div>
+        </div>`
+      );
+    }
+  }, [lat, lng, zoom, pocoTag, cliente, localizacao, cidadeUF, interactive, compact]);
+
+  return <div ref={containerRef} className="w-full h-full z-0" />;
 };
 
 export interface PocoLocationMapProps {
@@ -139,8 +229,6 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
   variant = 'editor',
   onChangeCoordenadas,
 }) => {
-  const apiKey = obterGoogleMapsApiKey();
-
   const coordExtraida = useMemo(
     () => extrairCoordenadasGeograficas(coordenadasGeograficas, coordenadasUTM),
     [coordenadasGeograficas, coordenadasUTM]
@@ -152,10 +240,8 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
   const [lngInput, setLngInput] = useState<string>(
     coordExtraida ? String(coordExtraida.lng) : ''
   );
-  const [mapTypeId, setMapTypeId] = useState<'hybrid' | 'roadmap' | 'terrain'>(
-    'hybrid'
-  );
-  const [zoom, setZoom] = useState<number>(variant === 'a4' ? 16 : 16);
+  const [camada, setCamada] = useState<CamadaMapa>('hybrid');
+  const [zoom, setZoom] = useState<number>(16);
   const [obtendoGps, setObtendoGps] = useState(false);
   const [erroGps, setErroGps] = useState<string | null>(null);
 
@@ -238,14 +324,6 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
     );
   };
 
-  const handleMapClick = (ev: MapMouseEvent) => {
-    if (!onChangeCoordenadas || variant === 'a4') return;
-    const latLng = ev.detail.latLng;
-    if (latLng) {
-      aplicarNovasCoordenadas(latLng.lat, latLng.lng);
-    }
-  };
-
   // Modo Folha A4 (Compacto para Relatório Técnico)
   if (variant === 'a4') {
     if (!coordExtraida) return null;
@@ -256,50 +334,21 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
       <div className="border-x border-b border-[#DDE3EC] bg-[#FAFBFD] p-2">
         <div className="grid grid-cols-12 gap-2.5 items-stretch">
           <div className="col-span-8 relative rounded border border-[#CBD5E1] overflow-hidden bg-slate-100 h-[118px]">
-            {apiKey ? (
-              <APIProvider apiKey={apiKey} language="pt-BR" region="BR">
-                <GoogleMap
-                  mapId="DEMO_MAP_ID"
-                  defaultCenter={{
-                    lat: coordExtraida.lat,
-                    lng: coordExtraida.lng,
-                  }}
-                  defaultZoom={16}
-                  mapTypeId="hybrid"
-                  disableDefaultUI={true}
-                  gestureHandling="none"
-                  internalUsageAttributionIds={[
-                    'gmp_mcp_codeassist_v1_aistudio',
-                  ]}
-                  style={{ width: '100%', height: '100%' }}
-                >
-                  <MapCameraSync
-                    lat={coordExtraida.lat}
-                    lng={coordExtraida.lng}
-                    zoom={16}
-                  />
-                  <PocoMarkerWithInfo
-                    lat={coordExtraida.lat}
-                    lng={coordExtraida.lng}
-                    pocoTag={pocoTag}
-                    cliente={cliente}
-                    localizacao={localizacao}
-                    cidadeUF={cidadeUF}
-                    compact
-                  />
-                </GoogleMap>
-              </APIProvider>
-            ) : (
-              <div className="w-full h-full flex items-center justify-center text-[7.5pt] text-slate-500">
-                Mapa Georreferenciado ({coordExtraida.lat.toFixed(6)}°,{' '}
-                {coordExtraida.lng.toFixed(6)}°)
-              </div>
-            )}
-            <div className="absolute top-1.5 left-1.5 bg-[#1B2A3B]/90 text-white px-2 py-0.5 rounded text-[6.8pt] font-bold tracking-wide uppercase flex items-center gap-1 shadow-xs pointer-events-none">
+            <LeafletMapCanvas
+              lat={coordExtraida.lat}
+              lng={coordExtraida.lng}
+              zoom={16}
+              camada="hybrid"
+              pocoTag={pocoTag}
+              cliente={cliente}
+              localizacao={localizacao}
+              cidadeUF={cidadeUF}
+              interactive={false}
+              compact
+            />
+            <div className="absolute top-1.5 left-1.5 z-[400] bg-[#1B2A3B]/90 text-white px-2 py-0.5 rounded text-[6.8pt] font-bold tracking-wide uppercase flex items-center gap-1 shadow-xs pointer-events-none">
               <span className="w-1.5 h-1.5 rounded-full bg-[#E8A020]" />
-              <span>
-                LOCALIZAÇÃO GEORREFERENCIADA ({pocoTag || 'PT01'})
-              </span>
+              <span>LOCALIZAÇÃO GEORREFERENCIADA ({pocoTag || 'PT01'})</span>
             </div>
           </div>
 
@@ -346,7 +395,7 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
               </div>
             </div>
             <div className="text-[6.5pt] text-[#6B7A8D] border-t border-slate-100 pt-1 leading-tight">
-              Ponto plotado automaticamente a partir das coordenadas do poço.
+              Ponto plotado automaticamente via OpenStreetMap / Esri.
             </div>
           </div>
         </div>
@@ -363,8 +412,8 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
             <MapPin className="w-4 h-4" />
           </div>
           <div>
-            <h4 className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-100 flex items-center gap-2">
-              <span>Mapa Automático por Coordenadas (Latitude / Longitude)</span>
+            <h4 className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-100 flex items-center gap-2 flex-wrap">
+              <span>Mapa Automático por Coordenadas (OpenStreetMap)</span>
               {coordExtraida && (
                 <span className="px-2 py-0.5 text-[10px] font-mono rounded-full bg-emerald-500/15 text-emerald-700 dark:text-emerald-300 border border-emerald-500/30">
                   Georreferenciado
@@ -395,16 +444,16 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
             {(
               [
                 { id: 'hybrid', label: 'Satélite' },
-                { id: 'roadmap', label: 'Mapa' },
+                { id: 'roadmap', label: 'Mapa (OSM)' },
                 { id: 'terrain', label: 'Relevo' },
               ] as const
             ).map((tipo) => (
               <button
                 key={tipo.id}
                 type="button"
-                onClick={() => setMapTypeId(tipo.id)}
+                onClick={() => setCamada(tipo.id)}
                 className={`px-2 py-1 rounded-md transition-colors ${
-                  mapTypeId === tipo.id
+                  camada === tipo.id
                     ? 'bg-[#1B2A3B] text-[#E8A020] font-bold'
                     : 'text-slate-600 dark:text-slate-400 hover:text-slate-900'
                 }`}
@@ -486,58 +535,32 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
         </div>
       )}
 
-      {/* Área do Mapa Interativo Google Maps */}
+      {/* Área do Mapa Interativo Leaflet (OpenStreetMap / Esri Satélite) */}
       {coordExtraida ? (
         <div className="space-y-2">
           <div
             className="relative w-full rounded-xl overflow-hidden border border-[#DDE3EC] dark:border-slate-700 shadow-xs bg-slate-200"
             style={{ height: variant === 'compact' ? '220px' : '280px' }}
           >
-            {apiKey ? (
-              <APIProvider apiKey={apiKey} language="pt-BR" region="BR">
-                <GoogleMap
-                  mapId="DEMO_MAP_ID"
-                  defaultCenter={{
-                    lat: coordExtraida.lat,
-                    lng: coordExtraida.lng,
-                  }}
-                  defaultZoom={zoom}
-                  mapTypeId={mapTypeId}
-                  gestureHandling="cooperative"
-                  disableDefaultUI={false}
-                  onClick={handleMapClick}
-                  internalUsageAttributionIds={[
-                    'gmp_mcp_codeassist_v1_aistudio',
-                  ]}
-                  style={{ width: '100%', height: '100%' }}
-                >
-                  <MapCameraSync
-                    lat={coordExtraida.lat}
-                    lng={coordExtraida.lng}
-                    zoom={zoom}
-                  />
-                  <PocoMarkerWithInfo
-                    lat={coordExtraida.lat}
-                    lng={coordExtraida.lng}
-                    pocoTag={pocoTag}
-                    cliente={cliente}
-                    localizacao={localizacao}
-                    cidadeUF={cidadeUF}
-                  />
-                </GoogleMap>
-              </APIProvider>
-            ) : (
-              <div className="w-full h-full flex flex-col items-center justify-center text-xs text-slate-600 p-4 text-center">
-                <Compass className="w-6 h-6 text-[#E8A020] mb-1" />
-                <span>
-                  Coordenadas detectadas: {coordExtraida.lat.toFixed(6)}°,{' '}
-                  {coordExtraida.lng.toFixed(6)}°
-                </span>
-              </div>
-            )}
+            <LeafletMapCanvas
+              lat={coordExtraida.lat}
+              lng={coordExtraida.lng}
+              zoom={zoom}
+              camada={camada}
+              pocoTag={pocoTag}
+              cliente={cliente}
+              localizacao={localizacao}
+              cidadeUF={cidadeUF}
+              interactive={true}
+              onMapClick={
+                onChangeCoordenadas
+                  ? (nLat, nLng) => aplicarNovasCoordenadas(nLat, nLng)
+                  : undefined
+              }
+            />
 
             {/* Barra flutuante de zoom rápido */}
-            <div className="absolute bottom-3 left-3 flex items-center gap-1.5 bg-[#1B2A3B]/90 backdrop-blur-xs text-white px-2.5 py-1.5 rounded-lg text-[11px] font-mono shadow-md">
+            <div className="absolute bottom-3 left-3 z-[400] flex items-center gap-1.5 bg-[#1B2A3B]/90 backdrop-blur-xs text-white px-2.5 py-1.5 rounded-lg text-[11px] font-mono shadow-md">
               <Navigation className="w-3.5 h-3.5 text-[#E8A020]" />
               <span>
                 {coordExtraida.lat.toFixed(6)}°, {coordExtraida.lng.toFixed(6)}°
@@ -553,7 +576,7 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
               </button>
               <button
                 type="button"
-                onClick={() => setZoom((z) => Math.min(20, z + 1))}
+                onClick={() => setZoom((z) => Math.min(19, z + 1))}
                 className="px-1.5 py-0.5 rounded bg-white/10 hover:bg-white/20 font-bold"
                 title="Aumentar Zoom"
               >

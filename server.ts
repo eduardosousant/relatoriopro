@@ -293,82 +293,58 @@ REGRAS CRÍTICAS DE PRIORIDADE:
     }
   });
 
-  // Endpoint para obter imagem estática do Google Maps em Base64 para inclusão no PDF
-  app.get('/api/maps-static-image', async (req, res) => {
+  // Proxy de tiles OpenStreetMap / Esri Satélite para renderização sem CORS no PDF
+  app.get('/api/osm-tile', async (req, res) => {
     try {
-      const lat = parseFloat(String(req.query.lat ?? ''));
-      const lng = parseFloat(String(req.query.lng ?? ''));
-      const zoom = parseInt(String(req.query.zoom ?? '16'), 10) || 16;
-      const maptype = String(req.query.maptype ?? 'hybrid');
-      const label =
-        String(req.query.label ?? 'P')
-          .replace(/[^A-Z0-9]/gi, '')
-          .charAt(0)
-          .toUpperCase() || 'P';
+      const layer = String(req.query.layer ?? 'satellite');
+      const z = parseInt(String(req.query.z ?? ''), 10);
+      const x = parseInt(String(req.query.x ?? ''), 10);
+      const y = parseInt(String(req.query.y ?? ''), 10);
 
       if (
-        !Number.isFinite(lat) ||
-        !Number.isFinite(lng) ||
-        lat < -90 ||
-        lat > 90 ||
-        lng < -180 ||
-        lng > 180
+        !Number.isInteger(z) ||
+        !Number.isInteger(x) ||
+        !Number.isInteger(y) ||
+        z < 0 ||
+        z > 19 ||
+        x < 0 ||
+        y < 0
       ) {
-        res.status(400).json({ error: 'Coordenadas inválidas.' });
+        res.status(400).send('Invalid tile coordinates');
         return;
       }
 
-      const apiKey =
-        process.env.VITE_GOOGLE_MAPS_API_KEY ||
-        process.env.GOOGLE_MAPS_API_KEY ||
-        '';
-      if (!apiKey) {
-        res.status(404).json({ error: 'Chave Google Maps não configurada.' });
-        return;
+      let tileUrl = '';
+      if (layer === 'osm') {
+        const sub = ['a', 'b', 'c'][(x + y) % 3];
+        tileUrl = `https://${sub}.tile.openstreetmap.org/${z}/${x}/${y}.png`;
+      } else if (layer === 'terrain') {
+        const sub = ['a', 'b', 'c'][(x + y) % 3];
+        tileUrl = `https://${sub}.tile.opentopomap.org/${z}/${x}/${y}.png`;
+      } else if (layer === 'labels') {
+        tileUrl = `https://services.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/${z}/${y}/${x}`;
+      } else {
+        tileUrl = `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`;
       }
 
-      const center = `${lat.toFixed(6)},${lng.toFixed(6)}`;
-      const params = new URLSearchParams({
-        center,
-        zoom: String(zoom),
-        size: '600x220',
-        scale: '2',
-        maptype,
-        markers: `size:mid|color:0xE8A020|label:${label}|${center}`,
-        key: apiKey,
+      const upstream = await fetch(tileUrl, {
+        headers: {
+          'User-Agent': 'RelatorPRO-Hidrogeologia/1.0 (https://vercel.app)',
+        },
       });
 
-      const response = await fetch(
-        `https://maps.googleapis.com/maps/api/staticmap?${params.toString()}`
-      );
-
-      if (response.status === 429 || response.status === 403) {
-        res.status(response.status).json({
-          quotaExceeded: response.status === 429,
-          error: 'Limite ou permissão da API Static Maps atingido.',
-        });
+      if (!upstream.ok) {
+        res.status(upstream.status).send('Tile unavailable');
         return;
       }
 
-      if (!response.ok) {
-        res.status(response.status).json({
-          error: `Static Maps retornou status ${response.status}`,
-        });
-        return;
-      }
-
-      const arrayBuffer = await response.arrayBuffer();
-      const base64 = Buffer.from(arrayBuffer).toString('base64');
-      const contentType = response.headers.get('content-type') || 'image/png';
-
-      res.json({
-        sucesso: true,
-        dataUrl: `data:${contentType};base64,${base64}`,
-      });
+      const buf = Buffer.from(await upstream.arrayBuffer());
+      const contentType = upstream.headers.get('content-type') || 'image/png';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.status(200).send(buf);
     } catch (err: any) {
-      res.status(500).json({
-        error: err?.message || 'Falha ao obter imagem estática do mapa.',
-      });
+      res.status(500).send(err?.message || 'Error fetching tile');
     }
   });
 

@@ -377,53 +377,189 @@ export function extrairCoordenadasGeograficas(
 }
 
 /**
- * Obtém a chave de API do Google Maps configurada no ambiente
+ * Carrega uma imagem de tile de forma assíncrona com timeout
  */
-export function obterGoogleMapsApiKey(): string {
-  const metaEnv = (import.meta as unknown as { env?: Record<string, string> }).env;
-  return (
-    metaEnv?.VITE_GOOGLE_MAPS_API_KEY ||
-    metaEnv?.GOOGLE_MAPS_API_KEY ||
-    ''
-  );
+function carregarTileImagem(url: string): Promise<HTMLImageElement | null> {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    const timer = window.setTimeout(() => resolve(null), 5000);
+    img.onload = () => {
+      window.clearTimeout(timer);
+      resolve(img);
+    };
+    img.onerror = () => {
+      window.clearTimeout(timer);
+      resolve(null);
+    };
+    img.src = url;
+  });
 }
 
 /**
- * Constrói a URL oficial do Google Maps Static API para visualização estática ou impressão
+ * Gera uma imagem PNG DataURL composta com tiles OpenStreetMap / Esri Satélite
+ * centrada exatamente em (lat, lng) com marcador do poço, para uso no PDF A4 sem API Key.
  */
-export function construirUrlMapaEstatico(params: {
+export async function renderizarMapaOSMCanvasDataUrl(params: {
   lat: number;
   lng: number;
   zoom?: number;
   width?: number;
   height?: number;
-  maptype?: 'roadmap' | 'satellite' | 'hybrid' | 'terrain';
-  label?: string;
-}): string {
-  const apiKey = obterGoogleMapsApiKey();
-  if (!apiKey) return '';
+  layer?: 'satellite' | 'osm';
+  pocoTag?: string;
+}): Promise<string | null> {
+  if (typeof document === 'undefined') return null;
 
   const {
     lat,
     lng,
     zoom = 16,
-    width = 640,
-    height = 260,
-    maptype = 'hybrid',
-    label = 'P',
+    width = 860,
+    height = 160,
+    layer = 'satellite',
+    pocoTag = 'PT01',
   } = params;
 
-  const center = `${lat.toFixed(6)},${lng.toFixed(6)}`;
-  const cleanLabel = (label || 'P').replace(/[^A-Z0-9]/gi, '').charAt(0).toUpperCase() || 'P';
+  const n = Math.pow(2, zoom);
+  const latRad = (lat * Math.PI) / 180;
+  const xFloat = ((lng + 180) / 360) * n;
+  const yFloat =
+    ((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2) * n;
 
-  const search = new URLSearchParams();
-  search.append('center', center);
-  search.append('zoom', String(zoom));
-  search.append('size', `${width}x${height}`);
-  search.append('scale', '2');
-  search.append('maptype', maptype);
-  search.append('markers', `size:mid|color:0xE8A020|label:${cleanLabel}|${center}`);
-  search.append('key', apiKey);
+  const centerPxX = xFloat * 256;
+  const centerPxY = yFloat * 256;
 
-  return `https://maps.googleapis.com/maps/api/staticmap?${search.toString()}`;
+  const minPxX = centerPxX - width / 2;
+  const maxPxX = centerPxX + width / 2;
+  const minPxY = centerPxY - height / 2;
+  const maxPxY = centerPxY + height / 2;
+
+  const tileMinX = Math.floor(minPxX / 256);
+  const tileMaxX = Math.floor(maxPxX / 256);
+  const tileMinY = Math.floor(minPxY / 256);
+  const tileMaxY = Math.floor(maxPxY / 256);
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  ctx.fillStyle = '#E2E8F0';
+  ctx.fillRect(0, 0, width, height);
+
+  const jobs: Array<{
+    tx: number;
+    ty: number;
+    imgPromise: Promise<HTMLImageElement | null>;
+    labelsPromise?: Promise<HTMLImageElement | null>;
+  }> = [];
+
+  for (let tx = tileMinX; tx <= tileMaxX; tx++) {
+    for (let ty = tileMinY; ty <= tileMaxY; ty++) {
+      if (ty < 0 || ty >= n) continue;
+      const wrappedX = ((tx % n) + n) % n;
+      const baseUrl = `/api/osm-tile?layer=${layer}&z=${zoom}&x=${wrappedX}&y=${ty}`;
+      const labelsUrl =
+        layer === 'satellite'
+          ? `/api/osm-tile?layer=labels&z=${zoom}&x=${wrappedX}&y=${ty}`
+          : null;
+
+      jobs.push({
+        tx,
+        ty,
+        imgPromise: carregarTileImagem(baseUrl),
+        labelsPromise: labelsUrl ? carregarTileImagem(labelsUrl) : undefined,
+      });
+    }
+  }
+
+  const resultados = await Promise.all(
+    jobs.map(async (j) => ({
+      tx: j.tx,
+      ty: j.ty,
+      img: await j.imgPromise,
+      labels: j.labelsPromise ? await j.labelsPromise : null,
+    }))
+  );
+
+  let algumDesenhado = false;
+  for (const r of resultados) {
+    const dx = r.tx * 256 - minPxX;
+    const dy = r.ty * 256 - minPxY;
+    if (r.img) {
+      ctx.drawImage(r.img, dx, dy, 256, 256);
+      algumDesenhado = true;
+    }
+    if (r.labels) {
+      ctx.drawImage(r.labels, dx, dy, 256, 256);
+    }
+  }
+
+  if (!algumDesenhado) {
+    return null;
+  }
+
+  // Marcador do Poço exatamente no centro
+  const cx = width / 2;
+  const cy = height / 2;
+
+  ctx.save();
+  // Halo de destaque
+  ctx.beginPath();
+  ctx.arc(cx, cy, 18, 0, Math.PI * 2);
+  ctx.fillStyle = 'rgba(232, 160, 32, 0.28)';
+  ctx.fill();
+  ctx.lineWidth = 2;
+  ctx.strokeStyle = 'rgba(232, 160, 32, 0.9)';
+  ctx.stroke();
+
+  // Pino Navy + Amber
+  ctx.beginPath();
+  ctx.moveTo(cx, cy);
+  ctx.bezierCurveTo(cx - 12, cy - 14, cx - 14, cy - 28, cx, cy - 34);
+  ctx.bezierCurveTo(cx + 14, cy - 28, cx + 12, cy - 14, cx, cy);
+  ctx.closePath();
+  ctx.fillStyle = '#E8A020';
+  ctx.fill();
+  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = '#1B2A3B';
+  ctx.stroke();
+
+  ctx.beginPath();
+  ctx.arc(cx, cy - 20, 5, 0, Math.PI * 2);
+  ctx.fillStyle = '#1B2A3B';
+  ctx.fill();
+
+  // Rótulo TAG do poço ao lado do pino
+  if (pocoTag) {
+    ctx.font = 'bold 12px monospace';
+    const textoTag = pocoTag.toUpperCase();
+    const tw = ctx.measureText(textoTag).width;
+    ctx.fillStyle = 'rgba(27, 42, 59, 0.92)';
+    ctx.fillRect(cx + 14, cy - 28, tw + 12, 18);
+    ctx.fillStyle = '#E8A020';
+    ctx.fillText(textoTag, cx + 20, cy - 15);
+  }
+
+  // Atribuição obrigatória no canto inferior direito
+  const creditos =
+    layer === 'satellite'
+      ? '© Esri World Imagery • OpenStreetMap'
+      : '© OpenStreetMap contributors';
+  ctx.font = '10px sans-serif';
+  const cw = ctx.measureText(creditos).width;
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+  ctx.fillRect(width - cw - 14, height - 18, cw + 10, 14);
+  ctx.fillStyle = '#1E293B';
+  ctx.fillText(creditos, width - cw - 9, height - 7);
+  ctx.restore();
+
+  try {
+    return canvas.toDataURL('image/png');
+  } catch {
+    return null;
+  }
 }
+
