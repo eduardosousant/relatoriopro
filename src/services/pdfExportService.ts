@@ -793,7 +793,7 @@ export class RelatorioPDFExporter {
     this.doc.setFontSize(5.8);
     this.doc.setTextColor(...white);
     this.doc.text(
-      sanitizarTextoWinAnsiPDF(`LOCALIZAÇÃO GEORREFERENCIADA (${tagPoco})`),
+      sanitizarTextoWinAnsiPDF(`${tagPoco}`),
       mapX + 4.8,
       mapY + 4.0
     );
@@ -808,7 +808,7 @@ export class RelatorioPDFExporter {
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
     this.doc.setFontSize(6.5);
     this.doc.setTextColor(...navy);
-    this.doc.text('GEORREFERENCIAMENTO (SIRGAS 2000)', infoX + 2, cardY + 3.8);
+    this.doc.text('(SIRGAS 2000)', infoX + 2, cardY + 3.8);
 
     this.doc.setDrawColor(235, 240, 245);
     this.doc.line(infoX + 1.5, cardY + 4.8, infoX + infoW - 2.7, cardY + 4.8);

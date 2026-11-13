@@ -348,14 +348,14 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
             />
             <div className="absolute top-1.5 left-1.5 z-[400] bg-[#1B2A3B]/90 text-white px-2 py-0.5 rounded text-[6.8pt] font-bold tracking-wide uppercase flex items-center gap-1 shadow-xs pointer-events-none">
               <span className="w-1.5 h-1.5 rounded-full bg-[#E8A020]" />
-              <span>LOCALIZAÇÃO GEORREFERENCIADA ({pocoTag || 'PT01'})</span>
+              <span>{pocoTag || 'PT01'}</span>
             </div>
           </div>
 
           <div className="col-span-4 flex flex-col justify-between rounded border border-[#DDE3EC] bg-white p-2 text-[7.2pt]">
             <div>
               <div className="font-extrabold uppercase text-[#1B2A3B] border-b border-slate-100 pb-1 mb-1 flex items-center justify-between">
-                <span>GEORREFERENCIAMENTO</span>
+                <span>Croqui</span>
                 <span className="text-[6.5pt] font-mono text-[#E8A020] bg-[#1B2A3B] px-1.5 py-0.2 rounded">
                   SIRGAS 2000
                 </span>

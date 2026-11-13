@@ -895,7 +895,7 @@ export const ImportarOSCampoModal: React.FC<ImportarOSCampoModalProps> = ({
                 className="px-4 py-2 text-xs font-bold rounded-lg border border-[#1B2A3B] dark:border-slate-600 bg-white dark:bg-slate-800 text-[#1B2A3B] dark:text-white hover:bg-slate-100 transition-colors flex items-center gap-1.5"
               >
                 <FileText className="w-4 h-4 text-[#2E75B6]" />
-                <span>Preencher no Relatório Atual</span>
+                <span>Preencher Atual</span>
               </button>
 
               <button
@@ -907,7 +907,7 @@ export const ImportarOSCampoModal: React.FC<ImportarOSCampoModalProps> = ({
                 className="px-4 py-2 text-xs font-bold rounded-lg bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] transition-colors flex items-center gap-1.5 shadow-sm"
               >
                 <PlusCircle className="w-4 h-4" />
-                <span>Criar Novo Relatório com Estes Dados</span>
+                <span>Criar com Estes Dados</span>
               </button>
             </div>
           )}

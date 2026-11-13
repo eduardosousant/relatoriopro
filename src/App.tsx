@@ -1315,7 +1315,7 @@ export default function App() {
             className="px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-[#E8A020] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
           >
             <Plus className="w-3.5 h-3.5 text-[#E8A020]" />
-            <span>Novo Relatório</span>
+            <span>Novo</span>
           </button>
           <button
             type="button"
