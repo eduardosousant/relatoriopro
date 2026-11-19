@@ -3,6 +3,8 @@ import autoTable, { RowInput, UserOptions } from 'jspdf-autotable';
 import { RelatorioTecnico } from '../types/relatorio';
 import {
   calcularParametrosStepDrawdownSEMA,
+  calcularDominioRebaixamentoGrafico,
+  calcularEscalaTempoLogGrafico,
   fmtNumeroSEMA,
 } from '../components/StepDrawdownSection';
 import {
@@ -15,6 +17,7 @@ import {
   latLngParaUTM,
   renderizarMapaOSMCanvasDataUrl,
 } from '../utils/coordenadasParser';
+import { calcularDimensionamentoBomba } from '../utils/dimensionamentoBomba';
 
 export type RGBTuple = [number, number, number];
 
@@ -171,7 +174,7 @@ export function sanitizarTextoWinAnsiPDF(texto: string): string {
     .replace(/[\u0394\u2206]\s*s\s*[\u2081][\u2080]/g, 'Delta s10')
     .replace(/[\u0394\u2206]\s*s/g, 'Delta s')
     .replace(/[\u0394\u2206]/g, 'Delta ')
-    .replace(/\u03B7/g, 'n') // eta -> n
+    .replace(/\u03B7/g, 'eta') // eta -> eta legível em WinAnsi
     .replace(/\u03C0/g, 'pi')
     .replace(/\u2264/g, '<=')
     .replace(/\u2265/g, '>=')
@@ -267,6 +270,7 @@ export class RelatorioPDFExporter {
     { dataUrl: string; widthMm: number; heightMm: number }
   >();
   private mapaLocalizacaoDataUrl: string | null = null;
+  private proximoNumeroSecao = 5;
 
   constructor(
     relatorio: RelatorioTecnico,
@@ -367,8 +371,37 @@ export class RelatorioPDFExporter {
     );
   }
 
+  private formatarRegistroCREA(creaBruto: string): string {
+    const limpo = creaBruto.trim();
+    if (!limpo || limpo.includes('DADO A PREENCHER')) {
+      return limpo || '[DADO A PREENCHER EM CAMPO]';
+    }
+    return /^CREA\b/i.test(limpo) ? limpo : `CREA: ${limpo}`;
+  }
+
   private get respTecnicoFormatado(): string {
-    return `${this.respTecnicoNome}, - ${this.respTecnicoCREA}`;
+    const creaLimpo = this.respTecnicoCREA.trim();
+    if (!creaLimpo || creaLimpo.includes('DADO A PREENCHER')) {
+      return this.respTecnicoNome;
+    }
+    const creaFmt = /^CREA\b/i.test(creaLimpo) ? creaLimpo : `CREA ${creaLimpo}`;
+    return `${this.respTecnicoNome} - ${creaFmt}`;
+  }
+
+  private obterUTMAtualFormatadoPDF(): string {
+    const utmBruto = this.relatorio.dadosPoco?.coordenadasUTM?.trim();
+    if (utmBruto && !utmBruto.startsWith('[DADO A PREENCHER') && utmBruto !== '—' && utmBruto !== '-') {
+      return sanitizarTextoWinAnsiPDF(utmBruto);
+    }
+    const coord = extrairCoordenadasGeograficas(
+      this.relatorio.dadosPoco?.coordenadasGeograficas,
+      this.relatorio.cabecalho?.coordenadasGeograficas
+    );
+    if (coord) {
+      const utm = latLngParaUTM(coord.lat, coord.lng);
+      return `${utm.zona}${utm.banda} (E:${utm.easting} / N:${utm.northing})`;
+    }
+    return '[DADO A PREENCHER EM CAMPO]';
   }
 
   /**
@@ -433,7 +466,7 @@ export class RelatorioPDFExporter {
    * Executa o `autoTable` sincronizando automaticamente `this.cursorY` com `lastAutoTable.finalY`
    * e travando `tableWidth` dentro da área útil imprimível A4 (`this.larguraUtil`).
    */
-  private executarAutoTable(opcoes: UserOptions): void {
+  private executarAutoTable(opcoes: UserOptions, espacoAposMm = 3.5): void {
     // Restaura a fonte padrão no documento antes da medição de linhas do autoTable
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
     this.doc.setFontSize(this.config.tipografia.tamanhoCorpoTabelaPt);
@@ -473,35 +506,45 @@ export class RelatorioPDFExporter {
 
     const finalY = this.doc.lastAutoTable?.finalY;
     if (typeof finalY === 'number') {
-      this.cursorY = finalY + 3.5;
+      this.cursorY = finalY + espacoAposMm;
     }
   }
 
   /**
    * Renderiza a barra de título de seção corporativa (Navy + marcador lateral Âmbar).
    */
-  private desenharBarraSecao(titulo: string, espacoMinimoAbaixoMm = 18): void {
-    this.garantirEspacoVertical(7.5 + espacoMinimoAbaixoMm);
+  private desenharBarraSecao(
+    titulo: string,
+    espacoMinimoAbaixoMm = 18,
+    compacta = false
+  ): void {
+    const alturaBarra = compacta ? 6.0 : 7.0;
+    const incrementoY = compacta ? 7.0 : 8.5;
+    this.garantirEspacoVertical(alturaBarra + espacoMinimoAbaixoMm);
 
     const { esquerdaMm } = this.config.margens;
     const { navy, amber, white } = this.config.cores;
 
     this.doc.setFillColor(...navy);
-    this.doc.rect(esquerdaMm, this.cursorY, this.larguraUtil, 7, 'F');
+    this.doc.rect(esquerdaMm, this.cursorY, this.larguraUtil, alturaBarra, 'F');
 
     this.doc.setFillColor(...amber);
-    this.doc.rect(esquerdaMm, this.cursorY, 3, 7, 'F');
+    this.doc.rect(esquerdaMm, this.cursorY, 3, alturaBarra, 'F');
 
     this.doc.setTextColor(...white);
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-    this.doc.setFontSize(this.config.tipografia.tamanhoBarraSecaoPt);
+    this.doc.setFontSize(
+      compacta
+        ? this.config.tipografia.tamanhoBarraSecaoPt - 0.3
+        : this.config.tipografia.tamanhoBarraSecaoPt
+    );
     this.doc.text(
       sanitizarTextoWinAnsiPDF(titulo.toUpperCase()),
       esquerdaMm + 5,
-      this.cursorY + 4.8
+      this.cursorY + (compacta ? 4.2 : 4.8)
     );
 
-    this.cursorY += 8.5;
+    this.cursorY += incrementoY;
   }
 
   /**
@@ -509,7 +552,8 @@ export class RelatorioPDFExporter {
    * usando `jspdf-autotable`.
    */
   private renderizarTabelaPares2Colunas(
-    pares: [string, string, string, string][]
+    pares: [string, string, string, string][],
+    compacta = false
   ): void {
     const colLabelW = 36;
     const colValW = this.larguraUtil / 2 - colLabelW;
@@ -520,7 +564,7 @@ export class RelatorioPDFExporter {
         styles: {
           fontStyle: 'bold',
           textColor: this.config.cores.textMuted,
-          fontSize: 7.1,
+          fontSize: compacta ? 6.9 : 7.1,
         },
       },
       {
@@ -536,7 +580,7 @@ export class RelatorioPDFExporter {
         styles: {
           fontStyle: 'bold',
           textColor: this.config.cores.textMuted,
-          fontSize: 7.1,
+          fontSize: compacta ? 6.9 : 7.1,
         },
       },
       {
@@ -549,16 +593,25 @@ export class RelatorioPDFExporter {
       },
     ]);
 
-    this.executarAutoTable({
-      body,
-      theme: 'grid',
-      columnStyles: {
-        0: { cellWidth: colLabelW },
-        1: { cellWidth: colValW },
-        2: { cellWidth: colLabelW },
-        3: { cellWidth: colValW },
+    this.executarAutoTable(
+      {
+        body,
+        theme: 'grid',
+        styles: compacta
+          ? {
+              cellPadding: { top: 0.95, right: 1.8, bottom: 0.95, left: 1.8 },
+              fontSize: 7.3,
+            }
+          : undefined,
+        columnStyles: {
+          0: { cellWidth: colLabelW },
+          1: { cellWidth: colValW },
+          2: { cellWidth: colLabelW },
+          3: { cellWidth: colValW },
+        },
       },
-    });
+      compacta ? 1.8 : 3.5
+    );
   }
 
   /**
@@ -699,7 +752,7 @@ export class RelatorioPDFExporter {
         width: 860,
         height: 160,
         layer: 'satellite',
-        pocoTag: this.relatorio.dadosPoco?.pocoId || 'PT01',
+        pocoTag: this.relatorio.dadosPoco?.pocoId || '',
       });
       if (dataUrl) {
         this.mapaLocalizacaoDataUrl = dataUrl;
@@ -723,12 +776,12 @@ export class RelatorioPDFExporter {
     const { esquerdaMm } = this.config.margens;
     const { navy, amber, white, textMuted, bordaTabela } = this.config.cores;
     const utm = latLngParaUTM(coord.lat, coord.lng);
-    const tagPoco = valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, 'PT01');
+    const tagPoco = valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, '');
 
-    const boxH = 24;
-    this.garantirEspacoVertical(boxH + 2);
+    const boxH = 21.5;
+    this.garantirEspacoVertical(boxH + 1.5);
 
-    const startY = this.cursorY - 0.5;
+    const startY = this.cursorY - 0.3;
     const mapW = 118;
     const infoW = this.larguraUtil - mapW - 2;
     const infoX = esquerdaMm + mapW + 2;
@@ -740,11 +793,12 @@ export class RelatorioPDFExporter {
     this.doc.rect(esquerdaMm, startY, this.larguraUtil, boxH, 'FD');
 
     // Área do Mapa (Esquerda)
-    const mapX = esquerdaMm + 1.2;
-    const mapY = startY + 1.2;
-    const mapInnerW = mapW - 1.8;
-    const mapInnerH = boxH - 2.4;
+    const mapX = esquerdaMm + 1.0;
+    const mapY = startY + 1.0;
+    const mapInnerW = mapW - 1.6;
+    const mapInnerH = boxH - 2.0;
 
+    let desenhouImagemMapa = false;
     if (this.mapaLocalizacaoDataUrl) {
       try {
         const fmt = this.mapaLocalizacaoDataUrl.includes('image/jpeg')
@@ -760,6 +814,7 @@ export class RelatorioPDFExporter {
           undefined,
           'FAST'
         );
+        desenhouImagemMapa = true;
       } catch {
         this.desenharMalhaCartograficaFallback(
           mapX,
@@ -784,34 +839,34 @@ export class RelatorioPDFExporter {
     this.doc.setDrawColor(...bordaTabela);
     this.doc.rect(mapX, mapY, mapInnerW, mapInnerH, 'S');
 
-    // Tarja identificadora sobre o mapa
-    this.doc.setFillColor(...navy);
-    this.doc.rect(mapX + 1.2, mapY + 1.2, 62, 4.2, 'F');
-    this.doc.setFillColor(...amber);
-    this.doc.circle(mapX + 3, mapY + 3.3, 0.8, 'F');
-    this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-    this.doc.setFontSize(5.8);
-    this.doc.setTextColor(...white);
-    this.doc.text(
-      sanitizarTextoWinAnsiPDF(`${tagPoco}`),
-      mapX + 4.8,
-      mapY + 4.0
-    );
+    // Tarja identificadora sobre o mapa apenas no fallback vetorial (na imagem OSM o pino já traz o rótulo sem duplicar)
+    if (!desenhouImagemMapa && tagPoco) {
+      this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
+      this.doc.setFontSize(5.8);
+      const tagSan = sanitizarTextoWinAnsiPDF(tagPoco);
+      const tarjaW = Math.min(mapInnerW - 2.4, Math.max(24, this.doc.getTextWidth(tagSan) + 7));
+      this.doc.setFillColor(...navy);
+      this.doc.rect(mapX + 1.2, mapY + 1.2, tarjaW, 4.2, 'F');
+      this.doc.setFillColor(...amber);
+      this.doc.circle(mapX + 3, mapY + 3.3, 0.8, 'F');
+      this.doc.setTextColor(...white);
+      this.doc.text(tagSan, mapX + 4.8, mapY + 4.0);
+    }
 
     // Painel lateral direito de Georreferenciamento SIRGAS 2000
-    const cardY = startY + 1.2;
-    const cardH = boxH - 2.4;
+    const cardY = startY + 1.0;
+    const cardH = boxH - 2.0;
     this.doc.setFillColor(...white);
     this.doc.setDrawColor(...bordaTabela);
-    this.doc.rect(infoX, cardY, infoW - 1.2, cardH, 'FD');
+    this.doc.rect(infoX, cardY, infoW - 1.0, cardH, 'FD');
 
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-    this.doc.setFontSize(6.5);
+    this.doc.setFontSize(6.3);
     this.doc.setTextColor(...navy);
-    this.doc.text('(SIRGAS 2000)', infoX + 2, cardY + 3.8);
+    this.doc.text('(SIRGAS 2000)', infoX + 2, cardY + 3.5);
 
     this.doc.setDrawColor(235, 240, 245);
-    this.doc.line(infoX + 1.5, cardY + 4.8, infoX + infoW - 2.7, cardY + 4.8);
+    this.doc.line(infoX + 1.5, cardY + 4.4, infoX + infoW - 2.5, cardY + 4.4);
 
     const linhasGeo: Array<[string, string]> = [
       ['LATITUDE:', `${coord.lat.toFixed(6)}°`],
@@ -823,21 +878,21 @@ export class RelatorioPDFExporter {
       ],
     ];
 
-    let yGeo = cardY + 8.0;
+    let yGeo = cardY + 7.4;
     for (const [rotulo, valor] of linhasGeo) {
       this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-      this.doc.setFontSize(6.1);
+      this.doc.setFontSize(5.9);
       this.doc.setTextColor(...textMuted);
       this.doc.text(rotulo, infoX + 2, yGeo);
 
       this.doc.setFont('courier', 'bold');
-      this.doc.setFontSize(6.2);
+      this.doc.setFontSize(6.0);
       this.doc.setTextColor(...navy);
-      this.doc.text(valor, infoX + infoW - 3, yGeo, { align: 'right' });
-      yGeo += 3.6;
+      this.doc.text(valor, infoX + infoW - 2.8, yGeo, { align: 'right' });
+      yGeo += 3.3;
     }
 
-    this.cursorY = startY + boxH + 2.2;
+    this.cursorY = startY + boxH + 1.8;
   }
 
   private desenharMalhaCartograficaFallback(
@@ -1118,7 +1173,7 @@ export class RelatorioPDFExporter {
    * natureza/objetivo do laudo, quadros formais de Contratante, Contratada, Dados Contratuais,
    * Normas Aplicadas, Responsabilidade Técnica, Síntese do Poço e Local/Data).
    */
- public renderizarFolhaDeRostoABNT(): void {
+  public renderizarFolhaDeRostoABNT(): void {
     const { esquerdaMm } = this.config.margens;
     const { larguraMm } = this.config.pagina;
     const { navy, amber, white, textMuted } = this.config.cores;
@@ -1126,237 +1181,381 @@ export class RelatorioPDFExporter {
 
     const yCapa = this.config.margens.topoCorpoTecnicoMm;
 
-    // Moldura Corporativa de Destaque do Título do Relatório (compactada para 22mm)
+    // Moldura Corporativa de Destaque do Título do Relatório (compactada para caber Seções 1 a 4 na Página 1)
     this.doc.setFillColor(...navy);
-    this.doc.rect(esquerdaMm, yCapa, this.larguraUtil, 22, 'F');
+    this.doc.rect(esquerdaMm, yCapa, this.larguraUtil, 18.5, 'F');
     this.doc.setFillColor(...amber);
-    this.doc.rect(esquerdaMm, yCapa, 4, 22, 'F');
+    this.doc.rect(esquerdaMm, yCapa, 4, 18.5, 'F');
 
     this.doc.setTextColor(...white);
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-    this.doc.setFontSize(13);
+    this.doc.setFontSize(12.5);
     this.doc.text(
       'RELATÓRIO TÉCNICO DE ENTREGA DE SERVIÇOS',
       larguraMm / 2 + 2,
-      yCapa + 10.5,
+      yCapa + 8.5,
       { align: 'center' }
     );
 
-    const tagPoco = valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, 'PT01');
+    const tagPoco = valOuPreencherPDF(
+      this.relatorio.dadosPoco?.pocoId,
+      '[DADO A PREENCHER EM CAMPO]'
+    );
     const numOS = valOuPreencherPDF(
       this.relatorio.cabecalho.contratoOS,
-      'OS-2026-0842 / CTR-119'
+      '[DADO A PREENCHER EM CAMPO]'
     );
-    this.doc.setFontSize(9);
+    this.doc.setFontSize(8.6);
     this.doc.text(
-      `POÇO TUBULAR PROFUNDO (${tagPoco})  •  ORDEM DE SERVIÇO: ${numOS}`,
+      sanitizarTextoWinAnsiPDF(`POÇO TUBULAR PROFUNDO (${tagPoco})  •  ORDEM DE SERVIÇO: ${numOS}`),
       larguraMm / 2 + 2,
-      yCapa + 17.5,
+      yCapa + 14.5,
       { align: 'center' }
     );
 
-    this.cursorY = yCapa + 25.5;
+    this.cursorY = yCapa + 20.5;
+    let numSecao = 1;
 
     // 1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO
-    this.desenharBarraSecao('1. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO (AO)');
-    this.executarAutoTable({
-      body: [
-        [
-          { content: 'CLIENTE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.cliente), colSpan: 3, styles: { fontStyle: 'bold' } },
+    this.desenharBarraSecao(`${numSecao++}. IDENTIFICAÇÃO DO CONTRATANTE / INTERESSADO (AO)`, 14, true);
+    this.executarAutoTable(
+      {
+        body: [
+          [
+            { content: 'CLIENTE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.cliente), colSpan: 3, styles: { fontStyle: 'bold' } },
+          ],
+          [
+            { content: 'CNPJ / CPF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.clienteCNPJ) },
+            { content: 'CONTATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.contatoLocal) },
+          ],
+          [
+            { content: 'LOCAL DA PRESTAÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.localizacao), colSpan: 3 },
+          ],
+          [
+            { content: 'CIDADE / UF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.cidadeUF) },
+            { content: 'TELEFONE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.telefoneContato) },
+          ],
         ],
-        [
-          { content: 'CNPJ / CPF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.clienteCNPJ) },
-          { content: 'CONTATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.contatoLocal) },
-        ],
-        [
-          { content: 'LOCAL DA PRESTAÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.localizacao), colSpan: 3 },
-        ],
-        [
-          { content: 'CIDADE / UF', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.cidadeUF, 'Ribeirão Preto - SP') },
-          { content: 'TELEFONE', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.telefoneContato) },
-        ],
-      ],
-      theme: 'grid',
-      styles: { cellPadding: { top: 1.2, right: 2, bottom: 1.2, left: 2 }, fontSize: 7.5 },
-      columnStyles: {
-        0: { cellWidth: 38 },
-        1: { cellWidth: 53 },
-        2: { cellWidth: 35 },
-        3: { cellWidth: 56 },
+        theme: 'grid',
+        styles: { cellPadding: { top: 0.95, right: 1.8, bottom: 0.95, left: 1.8 }, fontSize: 7.3 },
+        columnStyles: {
+          0: { cellWidth: 38 },
+          1: { cellWidth: 53 },
+          2: { cellWidth: 35 },
+          3: { cellWidth: 56 },
+        },
       },
-    });
+      1.8
+    );
 
     // 2. DADOS CONTRATUAIS, RESPONSABILIDADE TÉCNICA E NORMAS ABNT
-    this.desenharBarraSecao('2. DADOS CONTRATUAIS, RESPONSÁVEL TÉCNICO E NORMAS APLICADAS');
-    this.executarAutoTable({
-      body: [
-        [
-          { content: 'ORDEM DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: numOS, styles: { fontStyle: 'bold' } },
-          { content: 'CONTRATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.contratoRef, 'CTR-119 / 2026') },
+    this.desenharBarraSecao(`${numSecao++}. DADOS CONTRATUAIS, RESPONSÁVEL TÉCNICO E NORMAS APLICADAS`, 14, true);
+    this.executarAutoTable(
+      {
+        body: [
+          [
+            { content: 'ORDEM DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: numOS, styles: { fontStyle: 'bold' } },
+            { content: 'CONTRATO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.contratoRef) },
+          ],
+          [
+            { content: 'DATA DA EXECUÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: formatarDataBR(this.relatorio.cabecalho.dataExecucao) },
+            { content: 'STATUS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            {
+              content: valOuPreencherPDF(this.relatorio.cabecalho.statusOS, 'Concluído'),
+              styles: { fontStyle: 'bold', textColor: this.config.cores.green },
+            },
+          ],
+          [
+            { content: 'TIPO DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: valOuPreencherPDF(this.relatorio.cabecalho.tipoServico), colSpan: 3 },
+          ],
+          [
+            { content: 'RESPONSÁVEL TÉCNICO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: this.respTecnicoNome, styles: { fontStyle: 'bold' } },
+            { content: 'REGISTRO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            { content: this.formatarRegistroCREA(this.respTecnicoCREA) },
+          ],
+          [
+            { content: 'NORMAS APLICADAS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 6.9 } },
+            {
+              content:
+                'ABNT NBR 12212 (Projeto de poço tubular), ABNT NBR 12244 (Construção e ensaio de bombeamento de poço tubular) e ABNT NBR 10719 (Relatórios técnicos).',
+              colSpan: 3,
+            },
+          ],
         ],
-        [
-          { content: 'DATA DA EXECUÇÃO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: formatarDataBR(this.relatorio.cabecalho.dataExecucao) },
-          { content: 'STATUS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          {
-            content: valOuPreencherPDF(this.relatorio.cabecalho.statusOS, 'Concluído'),
-            styles: { fontStyle: 'bold', textColor: this.config.cores.green },
-          },
-        ],
-        [
-          { content: 'TIPO DE SERVIÇO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: valOuPreencherPDF(this.relatorio.cabecalho.tipoServico), colSpan: 3 },
-        ],
-        [
-          { content: 'RESPONSÁVEL TÉCNICO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: this.respTecnicoNome, styles: { fontStyle: 'bold' } },
-          { content: 'REGISTRO', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          { content: `CREA: ${this.respTecnicoCREA}` },
-        ],
-        [
-          { content: 'NORMAS APLICADAS', styles: { fontStyle: 'bold', textColor: textMuted, fontSize: 7.1 } },
-          {
-            content:
-              'ABNT NBR 12212 (Projeto de poço tubular), ABNT NBR 12244 (Construção e ensaio de bombeamento de poço tubular) e ABNT NBR 10719 (Relatórios técnicos).',
-            colSpan: 3,
-          },
-        ],
-      ],
-      theme: 'grid',
-      styles: { cellPadding: { top: 1.2, right: 2, bottom: 1.2, left: 2 }, fontSize: 7.5 },
-      columnStyles: {
-        0: { cellWidth: 38 },
-        1: { cellWidth: 53 },
-        2: { cellWidth: 35 },
-        3: { cellWidth: 56 },
+        theme: 'grid',
+        styles: { cellPadding: { top: 0.95, right: 1.8, bottom: 0.95, left: 1.8 }, fontSize: 7.3 },
+        columnStyles: {
+          0: { cellWidth: 38 },
+          1: { cellWidth: 53 },
+          2: { cellWidth: 35 },
+          3: { cellWidth: 56 },
+        },
       },
-    });
+      1.8
+    );
 
-    // SEÇÃO 3: CLIENTE E LOCAL (AGORA NA PÁGINA 1)
+    // SEÇÃO 3: CLIENTE E LOCAL (PÁGINA 1)
     if (vis?.clienteLocal !== false) {
-      this.desenharBarraSecao('3. CLIENTE E LOCAL');
-      this.renderizarTabelaPares2Colunas([
+      this.desenharBarraSecao(`${numSecao++}. CLIENTE E LOCAL`, 14, true);
+      const coordGeoExibida =
+        this.relatorio.dadosPoco?.coordenadasGeograficas ||
+        this.relatorio.cabecalho?.coordenadasGeograficas ||
+        '';
+      this.renderizarTabelaPares2Colunas(
         [
-          'Local da Obra',
-          valOuPreencherPDF(this.relatorio.cabecalho.localizacao),
-          'Cidade / UF',
-          valOuPreencherPDF(this.relatorio.cabecalho.cidadeUF),
+          [
+            'Local da Obra',
+            valOuPreencherPDF(this.relatorio.cabecalho.localizacao),
+            'Cidade / UF',
+            valOuPreencherPDF(this.relatorio.cabecalho.cidadeUF),
+          ],
+          [
+            'Coord. Geográficas',
+            valOuPreencherPDF(coordGeoExibida),
+            'Coordenadas UTM',
+            this.obterUTMAtualFormatadoPDF(),
+          ],
         ],
-        [
-          'Coord. Geográficas',
-          valOuPreencherPDF(
-            this.relatorio.dadosPoco?.coordenadasGeograficas,
-            'LAT -21.1767 | LON -47.8208'
-          ),
-          'Coordenadas UTM',
-          valOuPreencherPDF(
-            this.relatorio.dadosPoco?.coordenadasUTM,
-            '[DADO A PREENCHER EM CAMPO]'
-          ),
-        ],
-      ]);
+        true
+      );
       this.desenharBlocoMapaLocalizacaoPDF();
     }
 
-    // SEÇÃO 4: INFORMAÇÕES DO POÇO (AGORA NA PÁGINA 1)
+    // SEÇÃO 4: INFORMAÇÕES DO POÇO (PÁGINA 1 — INCLUI MOTOBOMBA E PAINEL INTEGRADOS NA TABELA)
     if (vis?.informacoesPoco !== false) {
-      this.desenharBarraSecao('4. INFORMAÇÕES DO POÇO');
-      this.renderizarTabelaPares2Colunas([
+      this.desenharBarraSecao(`${numSecao++}. INFORMAÇÕES DO POÇO`, 18, true);
+
+      const bombaEst = valOuPreencherPDF(
+        this.relatorio.dadosPoco?.motobombaEstado,
+        'Usado'
+      ).toUpperCase();
+      const painelEst = valOuPreencherPDF(
+        this.relatorio.dadosPoco?.painelEstado,
+        'Usado'
+      ).toUpperCase();
+
+      const colLabelW = 36;
+      const colValW = this.larguraUtil / 2 - colLabelW;
+
+      const fmtAntesDepoisPDF = (inicial?: string, final?: string): string => {
+        const ini = (inicial || '').trim();
+        const fim = (final || '').trim();
+        const iniValido =
+          ini.length > 0 &&
+          !ini.startsWith('[DADO A PREENCHER') &&
+          ini !== '—' &&
+          ini !== '-';
+        const fimValido =
+          fim.length > 0 &&
+          !fim.startsWith('[DADO A PREENCHER') &&
+          fim !== '—' &&
+          fim !== '-';
+        if (iniValido && fimValido) {
+          return `Antes: ${ini} | Depois: ${fim}`;
+        }
+        if (fimValido) return fim;
+        if (iniValido) return `Inicial: ${ini}`;
+        return valOuPreencherPDF(final || inicial);
+      };
+
+      const paresPoco: [string, string, string, string][] = [
         [
           'Poço (TAG)',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, 'PT01'),
+          valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId),
           'Profundidade Total',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.profundidadeTotal, '160,00 m'),
+          valOuPreencherPDF(this.relatorio.dadosPoco?.profundidadeTotal),
         ],
         [
           'Diâmetro (Ø)',
-          valOuPreencherPDF(
-            this.relatorio.dadosPoco?.diametroRevestimento,
-            '6" (152,4 mm) Aço Carbono Sch 40'
-          ),
-          'Crivo / Filtro',
-          valOuPreencherPDF(
-            this.relatorio.dadosPoco?.crivo,
-            '[DADO A PREENCHER EM CAMPO]'
+          valOuPreencherPDF(this.relatorio.dadosPoco?.diametroRevestimento),
+          'Crivo / Pos. Bomba',
+          fmtAntesDepoisPDF(
+            this.relatorio.dadosPoco?.crivoInicial,
+            this.relatorio.dadosPoco?.crivo
           ),
         ],
         [
           'Nível Estático (NE)',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.nivelEstatico, '22,40 m'),
+          fmtAntesDepoisPDF(
+            this.relatorio.dadosPoco?.nivelEstaticoInicial,
+            this.relatorio.dadosPoco?.nivelEstatico
+          ),
           'Nível Dinâmico (ND)',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.nivelDinamico, '64,10 m'),
+          fmtAntesDepoisPDF(
+            this.relatorio.dadosPoco?.nivelDinamicoInicial,
+            this.relatorio.dadosPoco?.nivelDinamico
+          ),
         ],
         [
-          'Vazão Recomendada',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.vazaoTeste, '10,29 m³/h'),
-          'Prof. Inst. Bomba',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.profundidadeBomba, '84,00 m'),
-        ],
-        [
+          'Vazão Operação/Teste',
+          fmtAntesDepoisPDF(
+            this.relatorio.dadosPoco?.vazaoInicial,
+            this.relatorio.dadosPoco?.vazaoTeste
+          ),
           'Tubo Edutor',
           valOuPreencherPDF(this.relatorio.dadosPoco?.tuboEdutor),
-          'Submergência Bomba',
-          '19,90 m acima do ND (Mín. 10,00 m)',
         ],
         [
           'Eletrodo Superior',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.eletrodoSuperior),
+          fmtAntesDepoisPDF(
+            this.relatorio.dadosPoco?.eletrodoSuperiorInicial,
+            this.relatorio.dadosPoco?.eletrodoSuperior
+          ),
           'Eletrodo Inferior',
-          valOuPreencherPDF(this.relatorio.dadosPoco?.eletrodoInferior),
+          fmtAntesDepoisPDF(
+            this.relatorio.dadosPoco?.eletrodoInferiorInicial,
+            this.relatorio.dadosPoco?.eletrodoInferior
+          ),
         ],
-      ]);
+      ];
 
-      const bombaEst = valOuPreencherPDF(
-        this.relatorio.dadosPoco?.motobombaEstado,
-        'Novo'
-      ).toUpperCase();
-      const painelEst = valOuPreencherPDF(
-        this.relatorio.dadosPoco?.painelEstado,
-        'Novo'
-      ).toUpperCase();
+      const bodySec4: RowInput[] = [
+        ...paresPoco.map(([lbl1, val1, lbl2, val2]) => [
+          {
+            content: lbl1.toUpperCase(),
+            styles: { fontStyle: 'bold' as const, textColor: textMuted, fontSize: 6.9 },
+          },
+          {
+            content: valOuPreencherPDF(val1),
+            styles: { fontStyle: 'normal' as const, textColor: this.config.cores.textDark, halign: 'right' as const },
+          },
+          {
+            content: lbl2.toUpperCase(),
+            styles: { fontStyle: 'bold' as const, textColor: textMuted, fontSize: 6.9 },
+          },
+          {
+            content: valOuPreencherPDF(val2),
+            styles: { fontStyle: 'normal' as const, textColor: this.config.cores.textDark, halign: 'right' as const },
+          },
+        ]),
+        [
+          {
+            content: 'MOTOBOMBA SUBMERSA',
+            styles: { fontStyle: 'bold' as const, textColor: textMuted, fontSize: 6.9 },
+          },
+          {
+            content: `${valOuPreencherPDF(this.relatorio.dadosPoco?.especificacaoBomba)} (${bombaEst})`,
+            colSpan: 3,
+            styles: { fontStyle: 'normal' as const, textColor: this.config.cores.textDark },
+          },
+        ],
+        [
+          {
+            content: 'PAINEL / QUADRO ELÉTRICO',
+            styles: { fontStyle: 'bold' as const, textColor: textMuted, fontSize: 6.9 },
+          },
+          {
+            content: `${valOuPreencherPDF(this.relatorio.dadosPoco?.painelEletrico)} (${painelEst})`,
+            colSpan: 3,
+            styles: { fontStyle: 'normal' as const, textColor: this.config.cores.textDark },
+          },
+        ],
+      ];
 
-      this.renderizarQuadroTextoTecnico(
-        'Conjunto Motobomba e Quadro de Comando',
-        `Motobomba: ${valOuPreencherPDF(
-          this.relatorio.dadosPoco?.especificacaoBomba
-        )} (${bombaEst}) | Painel: ${valOuPreencherPDF(
-          this.relatorio.dadosPoco?.painelEletrico
-        )} (${painelEst})`
+      this.executarAutoTable(
+        {
+          body: bodySec4,
+          theme: 'grid',
+          styles: {
+            cellPadding: { top: 0.95, right: 1.8, bottom: 0.95, left: 1.8 },
+            fontSize: 7.2,
+          },
+          columnStyles: {
+            0: { cellWidth: colLabelW },
+            1: { cellWidth: colValW },
+            2: { cellWidth: colLabelW },
+            3: { cellWidth: colValW },
+          },
+        },
+        1.5
       );
     }
+
+    this.proximoNumeroSecao = numSecao;
   }
 
   public renderizarCorpoTecnico(): void {
-    // Inicia a Página 2 diretamente na Seção 5
+    // Inicia a Página 2 diretamente na primeira seção técnica após a Página 1
     this.adicionarPaginaCorpoTecnico();
 
     const vis = this.relatorio.secoesVisiveis;
+    let numSecao = this.proximoNumeroSecao;
+
+    // QUADRO OPCIONAL DE DIMENSIONAMENTO HIDRÁULICO E ELÉTRICO DA MOTOBOMBA
+    if (this.relatorio.dadosPoco?.dimensionamentoBomba?.ativo) {
+      const resDim = calcularDimensionamentoBomba(this.relatorio.dadosPoco);
+      const cfgDim = this.relatorio.dadosPoco.dimensionamentoBomba!;
+      this.desenharBarraSecao(
+        'DIMENSIONAMENTO HIDRÁULICO E ELÉTRICO DO CONJUNTO MOTOBOMBA (NBR 12244)',
+        24
+      );
+      this.renderizarTabelaPares2Colunas([
+        [
+          'Vazão de Projeto (Q)',
+          `${fmtNumeroSEMA(resDim.vazaoProjetoM3h, 2)} m³/h (${fmtNumeroSEMA(resDim.vazaoProjetoLs, 2)} L/s)`,
+          'Altura Geométrica (Hgeo)',
+          `${fmtNumeroSEMA(resDim.alturaGeometricaTotalM, 2)} m (ND ${fmtNumeroSEMA(resDim.nivelDinamicoM, 1)}m + Ext ${fmtNumeroSEMA(resDim.desnivelExternoM, 1)}m)`,
+        ],
+        [
+          'Perda no Edutor (dH int)',
+          `${fmtNumeroSEMA(resDim.perdaCargaEdutorMca, 2)} m.c.a. (${cfgDim.diametroEdutorPol})`,
+          'Perda Adutora + Singular',
+          `${fmtNumeroSEMA(resDim.perdaCargaAdutoraMca + resDim.perdaCargaLocalizadaMca, 2)} m.c.a. + Pres ${fmtNumeroSEMA(resDim.pressaoResidualMca, 1)} m.c.a.`,
+        ],
+        [
+          'Altura Manométrica (AMT)',
+          `${fmtNumeroSEMA(resDim.amtTotalMca, 2)} m.c.a.`,
+          'Potência Hidr. / Motor',
+          `Phid ${fmtNumeroSEMA(resDim.potenciaHidraulicaCV, 2)} CV | Motor ${fmtNumeroSEMA(resDim.potenciaMotorRecomendadaCV, 1).replace(',0', '')} CV (${fmtNumeroSEMA(resDim.potenciaMotorRecomendadaKW, 2)} kW)`,
+        ],
+        [
+          'Velocidade no Edutor',
+          `v = ${fmtNumeroSEMA(resDim.velocidadeEdutorMs, 2)} m/s`,
+          'Tensão / Cabo PP Subm.',
+          `${cfgDim.tensaoAlimentacao} (I ~ ${fmtNumeroSEMA(resDim.correnteEstimadaA, 1)} A) | Cabo 3x${fmtNumeroSEMA(resDim.bitolaCaboRecomendadaMm2, 1).replace(',0', '')} mm² (dV = ${fmtNumeroSEMA(resDim.quedaTensaoCalculadaPercent, 2)}%)`,
+        ],
+      ]);
+    }
+
+    const tagPoco = valOuPreencherPDF(
+      this.relatorio.dadosPoco?.pocoId,
+      '[DADO A PREENCHER EM CAMPO]'
+    );
+    const profTotal = valOuPreencherPDF(this.relatorio.dadosPoco?.profundidadeTotal);
+    const diamRev = valOuPreencherPDF(this.relatorio.dadosPoco?.diametroRevestimento);
+    const crivo = valOuPreencherPDF(this.relatorio.dadosPoco?.crivo);
+    const ne = valOuPreencherPDF(this.relatorio.dadosPoco?.nivelEstatico);
+    const nd = valOuPreencherPDF(this.relatorio.dadosPoco?.nivelDinamico);
+    const vazao = valOuPreencherPDF(this.relatorio.dadosPoco?.vazaoTeste);
+    const dataExec = formatarDataBR(this.relatorio.cabecalho.dataExecucao);
 
     // SEÇÃO 5: DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO
     if (vis?.desenhoConstrutivo !== false) {
-      this.desenharBarraSecao('5. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO');
+      this.desenharBarraSecao(`${numSecao++}. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO`);
+      const desenhoFallback = `• Poço Identificado: ${tagPoco} | Profundidade Total: ${profTotal}.\n• Revestimento / Diâmetro: ${diamRev}.\n• Crivo / Posição da Bomba: ${crivo}.`;
       this.renderizarQuadroTextoTecnico(
-        'Especificação Construtiva, Cimentação Sanitária (0-24m) e Laje de Proteção (ABNT NBR 12212 / 12244)',
-        valOuPreencherPDF(
-          this.relatorio.dadosPoco?.desenhoConstrutivo,
-          `• Profundidade Final: 160,00 m.\n• Coluna de Revestimento (Casing): Aço Carbono Schedule 40 Ø 6" (152,4 mm).\n• Cimentação Sanitária: Espaço anular cimentado de 0,00 m a 24,00 m de profundidade.\n• Laje de Proteção Sanitária: Concreto armado 1,50 m × 1,50 m × 0,15 m com tampa hermética e hidrômetro.\n• Crivo / Filtro: [DADO A PREENCHER EM CAMPO — Abaixo de 84,00 m].\n• Instalação da Bomba Submersa: Profundidade única de 84,00 m (SEMPRE acima do topo do crivo e com submergência de 19,90 m acima do ND máximo de 64,10 m).`
-        )
+        'Especificação Construtiva, Proteção Sanitária e Posicionamento de Equipamentos (ABNT NBR 12212 / 12244)',
+        valOuPreencherPDF(this.relatorio.dadosPoco?.desenhoConstrutivo, desenhoFallback)
       );
     }
 
     // SEÇÃO 6: SERVIÇOS TÉCNICOS EXECUTADOS
     if (vis?.servicosExecutados !== false) {
-      this.desenharBarraSecao('6. SERVIÇOS TÉCNICOS EXECUTADOS');
+      const nServ = numSecao++;
+      this.desenharBarraSecao(`${nServ}. SERVIÇOS TÉCNICOS EXECUTADOS`);
       this.renderizarQuadroTextoTecnico(
-        '6.1 Memorial Descritivo (Objetivo, Perfuração, Desenvolvimento Air-Lift, Teste 24h e Comissionamento)',
+        `${nServ}.1 Memorial Descritivo dos Serviços Conduzidos em Campo (ABNT NBR 12212 / NBR 12244)`,
         valOuPreencherPDF(this.relatorio.descricaoServico)
       );
 
@@ -1365,7 +1564,7 @@ export class RelatorioPDFExporter {
       );
       if (servicosValidos.length > 0) {
         this.executarAutoTable({
-          head: [['#', '6.2 Descrição dos Serviços Conduzidos', 'Unidade', 'Qtd', 'Status']],
+          head: [['#', `${nServ}.2 Descrição dos Serviços Conduzidos`, 'Unidade', 'Qtd', 'Status']],
           body: servicosValidos.map((srv, idx) => [
             String(idx + 1),
             valOuPreencherPDF(srv.descricao),
@@ -1392,7 +1591,7 @@ export class RelatorioPDFExporter {
       );
       if (equipeValida.length > 0) {
         this.executarAutoTable({
-          head: [['#', '6.3 Profissional / Equipe Técnica Mobilizada', 'Função / Atribuição em Campo']],
+          head: [['#', `${nServ}.3 Profissional / Equipe Técnica Mobilizada`, 'Função / Atribuição em Campo']],
           body: equipeValida.map((m, idx) => [
             String(idx + 1),
             {
@@ -1415,7 +1614,7 @@ export class RelatorioPDFExporter {
       );
       if (materiaisValidos.length > 0) {
         this.executarAutoTable({
-          head: [['#', '6.4 Materiais e Insumos Aplicados no Poço', 'Unidade', 'Qtd', 'Situação']],
+          head: [['#', `${nServ}.4 Materiais e Insumos Aplicados no Poço`, 'Unidade', 'Qtd', 'Situação']],
           body: materiaisValidos.map((m, idx) => [
             String(idx + 1),
             valOuPreencherPDF(m.descricao),
@@ -1438,25 +1637,25 @@ export class RelatorioPDFExporter {
       }
     }
 
-    // SEÇÃO 7: PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO (COM FÓRMULAS EM FORMATO DE LIVRO)
+    // SEÇÃO 7: PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO
     if (vis?.parecerHidrogeologico !== false) {
-      this.desenharBarraSecao('7. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO');
-      const equacoesRelatorio = construirEquacoesLivroRelatorio(this.relatorio);
-      equacoesRelatorio.secao6.forEach((eqSpec) => {
-        this.renderizarBlocoEquacaoLivro(eqSpec, false);
-      });
+      this.desenharBarraSecao(`${numSecao++}. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO`);
+      if (this.relatorio.dadosPoco?.testeVazaoSEMA?.ativo) {
+        const equacoesRelatorio = construirEquacoesLivroRelatorio(this.relatorio);
+        equacoesRelatorio.secao6.forEach((eqSpec) => {
+          this.renderizarBlocoEquacaoLivro(eqSpec, false);
+        });
+      }
+      const parecerFallback = `• Parâmetros aferidos no Poço ${tagPoco} (${dataExec}): NE = ${ne} | ND = ${nd} | Vazão = ${vazao}.\n• Crivo / Posição da Bomba: ${crivo}.`;
       this.renderizarQuadroTextoTecnico(
         'Síntese Conclusiva do Parecer Hidrogeológico e Condições Operacionais (ABNT NBR 12212 / NBR 12244)',
-        valOuPreencherPDF(
-          this.relatorio.dadosPoco?.parecerHidrogeologico,
-          `• Parâmetros estabilizados no Teste Contínuo de 24h (13/03/2026): NE = 22,40 m | ND = 64,10 m | Rebaixamento máximo s = 41,70 m | Vazão recomendada de operação Q = 10,29 m³/h (246,86 m³/dia).\n• Profundidade única de instalação da bomba submersa: 84,00 m (posicionada com segurança acima do topo do crivo e com submergência operacional de 19,90 m acima do ND máximo).`
-        )
+        valOuPreencherPDF(this.relatorio.dadosPoco?.parecerHidrogeologico, parecerFallback)
       );
     }
 
     // SEÇÃO 8: CHECKLIST DE CONFORMIDADE E SEGURANÇA
     if (vis?.checklist !== false && this.relatorio.checklist && this.relatorio.checklist.length > 0) {
-      this.desenharBarraSecao('8. CHECKLIST DE CONFORMIDADE E SEGURANÇA');
+      this.desenharBarraSecao(`${numSecao++}. CHECKLIST DE CONFORMIDADE E SEGURANÇA`);
       this.executarAutoTable({
         head: [['Item de Verificação Normativa (ABNT / NR)', 'Data', 'Observação Técnica', 'Status']],
         body: this.relatorio.checklist.map((item) => [
@@ -1496,125 +1695,168 @@ export class RelatorioPDFExporter {
 
     // SEÇÃO 9: RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO
     if (vis?.recomendacoes !== false) {
-      this.desenharBarraSecao('9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO');
+      const nRec = numSecao++;
+      this.desenharBarraSecao(`${nRec}. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO`);
       const oc = this.relatorio.ocorrenciasCampo;
+      const recFallback = `1. Manter a operação do poço ${tagPoco} dentro da vazão recomendada (${vazao}).\n2. Monitorar mensalmente NE (${ne}), ND (${nd}), hidrômetro e parâmetros elétricos.\n3. Realizar análise físico-química e microbiológica semestral (Portaria GM/MS nº 888/2021).`;
+      const obsFallback = `Parâmetros registrados em ${dataExec} para o poço ${tagPoco}: NE = ${ne}, ND = ${nd}, Vazão = ${vazao}.`;
       this.renderizarQuadroTextoTecnico(
-        '9.1 Diretrizes Operacionais, Monitoramento e Manutenção Preventiva',
-        valOuPreencherPDF(
-          oc?.recomendacoes,
-          '1. Manter a operação na vazão recomendada de 10,29 m³/h e bomba instalada a 84,00 m.\n2. Monitorar mensalmente NE, ND, hidrômetro e parâmetros elétricos.\n3. Realizar análise físico-química e microbiológica semestral (Portaria GM/MS nº 888/2021).'
-        )
+        `${nRec}.1 Diretrizes Operacionais, Monitoramento e Manutenção Preventiva`,
+        valOuPreencherPDF(oc?.recomendacoes, recFallback)
       );
       this.renderizarQuadroTextoTecnico(
-        '9.2 Observações Técnicas e Unificação Documental',
-        valOuPreencherPDF(
-          oc?.observacoesGerais,
-          'Unificados todos os parâmetros pelo Teste Contínuo 24h a vazão constante de 13/03/2026 (NE = 22,40 m, ND = 64,10 m, Q = 10,29 m³/h, Bomba = 84,00 m). Nenhuma pendência remanescente.'
-        )
+        `${nRec}.2 Observações Técnicas e Registros de Campo`,
+        valOuPreencherPDF(oc?.observacoesGerais, obsFallback)
       );
     }
 
-    // SEÇÃO 10: REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS
+    // SEÇÃO DE REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS (2 fotos por linha, proporção 1:1 quadrada travada)
     const fotosOrdenadas = [...this.relatorio.fotos].sort(
       (a, b) => a.ordem - b.ordem
     );
-    if (vis?.fotos !== false && fotosOrdenadas.length > 0) {
-      this.desenharBarraSecao('10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS', 46);
+    if (vis?.fotos !== false) {
+      const gapColMm = 5;
+      const gapRowMm = 5;
+      const cardPaddingMm = 2.2;
+      const legendaBoxHMm = 13;
+      const cardW = (this.larguraUtil - gapColMm) / 2;
+      // Proporção estritamente 1:1 (quadrada): largura da foto === altura da foto
+      const imgSideMm = cardW - cardPaddingMm * 2;
+      const cardH = cardPaddingMm + imgSideMm + legendaBoxHMm;
+
+      // Garante que o título da seção + a primeira linha de fotos caibam juntos sem quebrar ao meio
+      this.desenharBarraSecao(
+        `${numSecao++}. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS`,
+        cardH + 4
+      );
+
+      const listaFotosPDF =
+        fotosOrdenadas.length > 0
+          ? fotosOrdenadas
+          : [
+              {
+                id: 'placeholder-1',
+                urlBase64: '',
+                legenda: `[FOTO REAL OBRIGATÓRIA: Evidência #1 — Conj. Motobomba / Cavalete, data ${dataExec}, Poço ${tagPoco}]`,
+                timestamp: 0,
+                ordem: 1,
+              },
+              {
+                id: 'placeholder-2',
+                urlBase64: '',
+                legenda: `[FOTO REAL OBRIGATÓRIA: Evidência #2 — Quadro de Comando / Medição em Campo, data ${dataExec}, Poço ${tagPoco}]`,
+                timestamp: 0,
+                ordem: 2,
+              },
+            ];
 
       const { esquerdaMm } = this.config.margens;
       const { navy, textDark } = this.config.cores;
-      const gapColMm = 8;
-      const boxW = (this.larguraUtil - gapColMm) / 2;
-      const boxH = 40;
-      let col = 0;
-      let rowY = this.cursorY;
 
-      for (let i = 0; i < fotosOrdenadas.length; i++) {
-        const p = fotosOrdenadas[i];
-        const posX = esquerdaMm + col * (boxW + gapColMm);
-
-        if (rowY + boxH + 4 > this.limiteInferiorY) {
+      for (let i = 0; i < listaFotosPDF.length; i += 2) {
+        // Controle de quebra de página por linha (evita cortar a foto ou separar foto da legenda)
+        if (this.cursorY + cardH > this.limiteInferiorY) {
           this.adicionarPaginaCorpoTecnico();
-          rowY = this.cursorY;
-          col = 0;
         }
 
-        const temImgReal = Boolean(
-          p.urlBase64 && p.urlBase64.trim().startsWith('data:image')
-        );
-        const legendaTexto = valOuPreencherPDF(
-          p.legenda,
-          `[FOTO REAL OBRIGATÓRIA: Evidência #${i + 1}, data ${formatarDataBR(
-            this.relatorio.cabecalho.dataExecucao
-          )}, GPS LAT -21.1767 LON -47.8208]`
-        );
+        const rowY = this.cursorY;
+        const parLinha = listaFotosPDF.slice(i, i + 2);
 
-        if (temImgReal) {
-          try {
-            const fmt = p.urlBase64.includes('image/png') ? 'PNG' : 'JPEG';
-            this.doc.addImage(
-              p.urlBase64,
-              fmt,
-              posX,
-              rowY,
-              boxW,
-              boxH - 12,
-              undefined,
-              'FAST'
+        parLinha.forEach((p, colIdx) => {
+          const indiceGlobal = i + colIdx;
+          const cardX = esquerdaMm + colIdx * (cardW + gapColMm);
+          const imgX = cardX + cardPaddingMm;
+          const imgY = rowY + cardPaddingMm;
+
+          // Card externo com fundo branco e borda limpa (border-gray-300 -> RGB 209, 213, 219)
+          this.doc.setFillColor(255, 255, 255);
+          this.doc.setDrawColor(209, 213, 219);
+          this.doc.setLineWidth(0.28);
+          this.doc.rect(cardX, rowY, cardW, cardH, 'FD');
+
+          const temImgReal = Boolean(
+            p.urlBase64 && p.urlBase64.trim().startsWith('data:image')
+          );
+          const legendaBruta = valOuPreencherPDF(
+            p.legenda,
+            `[FOTO REAL OBRIGATÓRIA: Evidência #${indiceGlobal + 1}, data ${dataExec}, Poço ${tagPoco}]`
+          );
+          const legendaFormatada = `Foto ${String(indiceGlobal + 1).padStart(2, '0')}: ${legendaBruta}`;
+
+          if (temImgReal) {
+            try {
+              const fmt = p.urlBase64.includes('image/png') ? 'PNG' : 'JPEG';
+              // Renderiza em proporção estritamente 1:1 (imgSideMm x imgSideMm) sem achatar ou esticar
+              this.doc.addImage(
+                p.urlBase64,
+                fmt,
+                imgX,
+                imgY,
+                imgSideMm,
+                imgSideMm,
+                undefined,
+                'FAST'
+              );
+            } catch {
+              // fallback seguro caso a imagem falhe ao decodificar
+            }
+            this.doc.setDrawColor(229, 231, 235);
+            this.doc.setLineWidth(0.2);
+            this.doc.rect(imgX, imgY, imgSideMm, imgSideMm, 'S');
+          } else {
+            // Quadro 1:1 reservado para evidência de campo
+            this.doc.setFillColor(255, 251, 235);
+            this.doc.setDrawColor(232, 160, 32);
+            this.doc.setLineWidth(0.3);
+            this.doc.rect(imgX, imgY, imgSideMm, imgSideMm, 'FD');
+
+            this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
+            this.doc.setFontSize(7.2);
+            this.doc.setTextColor(...navy);
+            this.doc.text(
+              'ESPAÇO RESERVADO — FOTO 1:1 DE CAMPO',
+              imgX + imgSideMm / 2,
+              imgY + imgSideMm / 2 - 4,
+              { align: 'center' }
             );
-          } catch {
-            // fallback seguro
+            this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
+            this.doc.setFontSize(6.8);
+            this.doc.setTextColor(75, 85, 99);
+            const placeholderLines: string[] = this.doc.splitTextToSize(
+              legendaBruta,
+              imgSideMm - 8
+            );
+            this.doc.text(
+              placeholderLines.slice(0, 4),
+              imgX + imgSideMm / 2,
+              imgY + imgSideMm / 2 + 2,
+              { align: 'center' }
+            );
           }
-          this.doc.setFillColor(248, 250, 252);
-          this.doc.setDrawColor(215, 222, 232);
-          this.doc.rect(posX, rowY + boxH - 12, boxW, 12, 'FD');
+
+          // Legenda posicionada logo abaixo da imagem 1:1 dentro do card
           this.doc.setTextColor(...textDark);
           this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
-          this.doc.setFontSize(6.8);
-          const lines = this.doc.splitTextToSize(legendaTexto, boxW - 4);
-          this.doc.text(lines.slice(0, 3), posX + 2, rowY + boxH - 8.5);
-        } else {
-          this.doc.setFillColor(255, 251, 235);
-          this.doc.setDrawColor(232, 160, 32);
-          this.doc.setLineWidth(0.3);
-          this.doc.rect(posX, rowY, boxW, boxH, 'FD');
-          this.doc.setFont(this.config.tipografia.familiaPadrao, 'bold');
-          this.doc.setFontSize(7);
-          this.doc.setTextColor(...navy);
-          this.doc.text(
-            'ESPAÇO RESERVADO — FOTO REAL DE CAMPO',
-            posX + boxW / 2,
-            rowY + 6,
-            { align: 'center' }
-          );
-          this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
-          this.doc.setFontSize(6.8);
-          this.doc.setTextColor(60, 70, 85);
+          this.doc.setFontSize(7.2);
           const lines: string[] = this.doc.splitTextToSize(
-            legendaTexto,
-            boxW - 6
+            legendaFormatada,
+            imgSideMm - 1
           );
-          this.doc.text(lines.slice(0, 6), posX + 3, rowY + 12);
-        }
+          this.doc.text(
+            lines.slice(0, 3),
+            imgX + 0.5,
+            imgY + imgSideMm + 4
+          );
+        });
 
-        col++;
-        if (col >= 2) {
-          col = 0;
-          rowY += boxH + 5;
-          this.cursorY = rowY;
-        }
+        this.cursorY = rowY + cardH + gapRowMm;
       }
-
-      if (col > 0) {
-        rowY += boxH + 5;
-        this.cursorY = rowY;
-      }
-      this.cursorY += 2;
+      this.cursorY += 1;
     }
 
-    // SEÇÃO 11: ASSINATURAS
+    // SEÇÃO FINAL: ASSINATURAS (numeração sequencial automática: 10 sem fotos, 11 com fotos)
     if (vis?.assinaturas !== false) {
-      this.desenharBarraSecao('11. ASSINATURAS', 38);
+      this.desenharBarraSecao(`${numSecao++}. ASSINATURAS`, 38);
       this.desenharBlocoAssinaturas();
     }
   }
@@ -1627,8 +1869,7 @@ private desenharBlocoAssinaturas(): void {
     const textoDeclaracao = `Declaramos que os serviços referentes à ${valOuPreencherPDF(
       this.relatorio.cabecalho.contratoOS
     )} (Poço ${valOuPreencherPDF(
-      this.relatorio.dadosPoco?.pocoId,
-      'PT01'
+      this.relatorio.dadosPoco?.pocoId
     )}) foram integralmente executados, comissionados e documentados segundo as normas ABNT NBR 12212 e NBR 12244.`;
 
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
@@ -1770,39 +2011,14 @@ private desenharBlocoAssinaturas(): void {
       horaInicioRecuperacao: '18:10:00',
       dataFinalRecuperacao: this.relatorio.cabecalho.dataExecucao || '2026-03-13',
       horaFinalRecuperacao: '18:45:00',
-      tempoRecuperacaoMinutos: '35',
-      nivelRecuperacaoFinalM: '33,60',
-      vazaoOutorgaRecomendadaM3h: '10,29',
+      tempoRecuperacaoMinutos: '',
+      nivelRecuperacaoFinalM: '',
+      vazaoOutorgaRecomendadaM3h: '',
       regimeBombeamentoHorasDia: '16',
-      etapas: this.relatorio.dadosPoco?.testeVazaoSEMA?.etapas || [
-        {
-          id: 'step-1',
-          etapa: 1,
-          duracaoMinutos: 120,
-          vazaoM3h: '6,50',
-          nivelDinamicoM: '46,20',
-          observacao: '1ª Etapa Escalonada — Regime Laminar Predominante',
-        },
-        {
-          id: 'step-2',
-          etapa: 2,
-          duracaoMinutos: 120,
-          vazaoM3h: '8,40',
-          nivelDinamicoM: '54,80',
-          observacao: '2ª Etapa Escalonada — Transição Hidrodinâmica',
-        },
-        {
-          id: 'step-3',
-          etapa: 3,
-          duracaoMinutos: 240,
-          vazaoM3h: '10,29',
-          nivelDinamicoM: '64,10',
-          observacao: '3ª Etapa Nominal Estabilizada — Vazão Recomendada (24h)',
-        },
-      ],
+      etapas: this.relatorio.dadosPoco?.testeVazaoSEMA?.etapas || [],
     };
     const calc = calcularParametrosStepDrawdownSEMA(
-      this.relatorio.dadosPoco?.nivelEstatico || '22,40 m',
+      this.relatorio.dadosPoco?.nivelEstatico || '0,00 m',
       teste
     );
 
@@ -1827,14 +2043,11 @@ private desenharBlocoAssinaturas(): void {
           `Cliente: ${valOuPreencherPDF(this.relatorio.cabecalho.cliente).slice(0, 42)}  |  O.S.: ${valOuPreencherPDF(
             this.relatorio.cabecalho.contratoOS
           )}  |  Poço: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco?.pocoId,
-            'PT01'
+            this.relatorio.dadosPoco?.pocoId
           )}  |  N.E.: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco?.nivelEstatico,
-            '22,40 m'
-          )}  |  Bomba: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco?.profundidadeBomba,
-            '84,00 m'
+            this.relatorio.dadosPoco?.nivelEstatico
+          )}  |  Crivo: ${valOuPreencherPDF(
+            this.relatorio.dadosPoco?.crivo
           )}`,
         ],
         [
@@ -1942,7 +2155,7 @@ private desenharBlocoAssinaturas(): void {
       calc.leiturasBombeamentoCalc
         .filter((l) => l.sMed !== null)
         .map((l) => ({ s: l.sMed as number, t: l.tMin })),
-      600,
+      400,
       yGrafBomb,
       hGrafBomb
     );
@@ -1954,17 +2167,32 @@ private desenharBlocoAssinaturas(): void {
       120
     );
 
+    const ultimaRecAnexo =
+      calc.leiturasRecuperacaoCalc.length > 0
+        ? calc.leiturasRecuperacaoCalc[calc.leiturasRecuperacaoCalc.length - 1]
+        : null;
+    const neAnexoNum = calc.neInicial ?? 0;
+    const ndMaxAnexoStr = fmtNumeroSEMA(calc.ndEstabilizadoFinalM, 2);
+    const sMaxAnexoStr = fmtNumeroSEMA(calc.rebaixamentoMaximoM, 2);
+    const sResAnexoNum =
+      ultimaRecAnexo?.nd !== null && ultimaRecAnexo?.nd !== undefined
+        ? Math.max(0, ultimaRecAnexo.nd - neAnexoNum)
+        : 0;
+    const sResAnexoStr = fmtNumeroSEMA(sResAnexoNum, 2);
+    const tempoRecAnexo = ultimaRecAnexo?.tMin ?? (teste?.tempoRecuperacaoMinutos || '35');
+
     this.executarAutoTable({
       body: [
         [
-          `Poço: ${valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId, 'PT01')}  |  N.E.: ${valOuPreencherPDF(
-            this.relatorio.dadosPoco?.nivelEstatico,
-            '22,40 m'
-          )}  |  ND máx: 64,10 m (s = 41,70 m)  |  Recuperação Real Recalculada (35 min): ${fmtNumeroSEMA(
+          `Poço: ${valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId)}  |  N.E.: ${fmtNumeroSEMA(
+            calc.neInicial,
+            2,
+            ' m'
+          )}  |  ND máx: ${ndMaxAnexoStr} m (s = ${sMaxAnexoStr} m)  |  Recuperação Real (${tempoRecAnexo} min): ${fmtNumeroSEMA(
             calc.percentualRecuperacao,
             1,
             '%'
-          )} [(41,70 - 11,20)/41,70]`,
+          )} [(${sMaxAnexoStr} - ${sResAnexoStr})/${sMaxAnexoStr}]`,
         ],
       ],
       theme: 'grid',
@@ -2055,7 +2283,7 @@ private desenharBlocoAssinaturas(): void {
           's/Q',
           'Q/s',
           's calc (m)',
-          'Efic. (η)',
+          'Efic. (%)',
         ],
       ],
       body: calc.etapasCalculadas.map((et) => [
@@ -2105,12 +2333,29 @@ private desenharBlocoAssinaturas(): void {
     });
 
     // Bloco 3: Condições Operacionais Definitivas e Unificadas via AutoTable
+    const pocoTagAnexo = valOuPreencherPDF(this.relatorio.dadosPoco?.pocoId);
+    const qRecAnexo =
+      valOuPreencherPDF(
+        this.relatorio.dadosPoco?.vazaoTeste,
+        fmtNumeroSEMA(calc.vazaoEstabilizadaFinalM3h, 2, ' m³/h')
+      );
+    const neRecAnexo =
+      valOuPreencherPDF(
+        this.relatorio.dadosPoco?.nivelEstatico,
+        fmtNumeroSEMA(calc.neInicial, 2, ' m')
+      );
+    const ndRecAnexo =
+      valOuPreencherPDF(
+        this.relatorio.dadosPoco?.nivelDinamico,
+        `${ndMaxAnexoStr} m`
+      );
+    const crivoRecAnexo = valOuPreencherPDF(this.relatorio.dadosPoco?.crivo);
+
     this.executarAutoTable({
       head: [
         [
           {
-            content:
-              'CONDIÇÕES OPERACIONAIS DEFINITIVAS E UNIFICADAS RECOMENDADAS (POÇO PT01)',
+            content: `CONDIÇÕES OPERACIONAIS DEFINITIVAS E UNIFICADAS RECOMENDADAS (POÇO ${pocoTagAnexo})`,
             styles: { halign: 'center' },
           },
         ],
@@ -2118,8 +2363,7 @@ private desenharBlocoAssinaturas(): void {
       body: [
         [
           {
-            content:
-              'Vazão de Operação Recomendada: 10,29 m³/h   |   Nível Estático (NE): 22,40 m   |   Nível Dinâmico Estabilizado (ND): 64,10 m\nProfundidade Única de Instalação da Bomba: 84,00 m (Posição acima do topo do crivo e submergência de 19,90 m acima do ND máximo)',
+            content: `Vazão de Operação Recomendada: ${qRecAnexo}   |   Nível Estático (NE): ${neRecAnexo}   |   Nível Dinâmico Estabilizado (ND): ${ndRecAnexo}\nCrivo / Posição da Bomba: ${crivoRecAnexo}`,
             styles: {
               halign: 'center',
               fontStyle: 'bold',
@@ -2139,7 +2383,7 @@ private desenharBlocoAssinaturas(): void {
     tituloVertical: string,
     labelHorizontal: string,
     pontos: { s: number; t: number }[],
-    tMaxLog: number,
+    tMaxLogPiso: number,
     gyStart: number,
     ghHeight: number
   ): void {
@@ -2156,15 +2400,17 @@ private desenharBlocoAssinaturas(): void {
     this.doc.rect(gx, gy, gw, gh, 'FD');
 
     const validos = pontos.filter((p) => p.s >= 0 && p.t >= 1);
-    const minS =
-      validos.length > 0
-        ? Math.max(0, Math.floor(Math.min(...validos.map((p) => p.s)) - 1))
-        : 0;
-    const maxS =
-      validos.length > 0
-        ? Math.ceil(Math.max(...validos.map((p) => p.s)) + 2)
-        : 45;
-    const spanS = Math.max(5, maxS - minS);
+    const { min: minS, max: maxS, ticks: ticksS } =
+      calcularDominioRebaixamentoGrafico(
+        validos.map((p) => p.s),
+        45,
+        false
+      );
+    const { tMax: tMaxLog, ticks: ticksT } = calcularEscalaTempoLogGrafico(
+      validos.map((p) => p.t),
+      tMaxLogPiso
+    );
+    const spanS = Math.max(1, maxS - minS);
     const logMax = Math.log10(tMaxLog);
 
     this.doc.setFont(this.config.tipografia.familiaPadrao, 'normal');
@@ -2172,19 +2418,15 @@ private desenharBlocoAssinaturas(): void {
     this.doc.setTextColor(...this.config.cores.navy);
 
     // Linhas horizontais: Rebaixamento s (m) linear no eixo Y
-    const passoS = spanS > 28 ? 5 : 2;
-    for (let sVal = minS; sVal <= maxS; sVal += passoS) {
+    ticksS.forEach((sVal) => {
       const py = gy + gh - ((sVal - minS) / spanS) * gh;
       this.doc.setDrawColor(184, 216, 227);
       this.doc.setLineWidth(0.15);
       this.doc.line(gx, py, gx + gw, py);
       this.doc.text(String(sVal), gx - 2, py + 1.5, { align: 'right' });
-    }
+    });
 
     // Linhas verticais logarítmicas: Tempo t (min) no eixo X
-    const ticksT = [1, 2, 5, 10, 20, 50, 100, 200, 400, 600, 1000].filter(
-      (d) => d <= tMaxLog
-    );
     ticksT.forEach((tDec) => {
       const px = gx + (Math.log10(tDec) / logMax) * gw;
       const isMajor =
@@ -2443,8 +2685,8 @@ private desenharBlocoAssinaturas(): void {
     this.aplicarCabecalhoERodapeGlobal(false);
 
     const tagSanitizada = valOuPreencherPDF(
-      this.relatorio.dadosPoco.pocoId,
-      'PT01'
+      this.relatorio.dadosPoco?.pocoId,
+      'POCO'
     ).replace(/[^a-zA-Z0-9-_]/g, '_');
     const nomePDF = `ANEXO_TESTE_DE_BOMBEAMENTO_${tagSanitizada}_HIDROGEO.pdf`;
     this.doc.save(nomePDF);

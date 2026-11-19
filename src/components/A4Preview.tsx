@@ -6,6 +6,8 @@ import {
 } from '../services/pdfExportService';
 import {
   calcularParametrosStepDrawdownSEMA,
+  calcularDominioRebaixamentoGrafico,
+  calcularEscalaTempoLogGrafico,
   fmtNumeroSEMA,
 } from './StepDrawdownSection';
 import {
@@ -14,16 +16,21 @@ import {
 } from './MathFormulaBlock';
 import { PocoLocationMap } from './PocoLocationMap';
 import {
+  extrairCoordenadasGeograficas,
+  latLngParaUTM,
+} from '../utils/coordenadasParser';
+import { calcularDimensionamentoBomba } from '../utils/dimensionamentoBomba';
+import {
   FileDown,
   Printer,
   Maximize2,
   Minimize2,
-  Camera,
   Settings2,
   CheckSquare,
   SlidersHorizontal,
   X,
   Sparkles,
+  Image as ImageIcon,
 } from 'lucide-react';
 
 export interface SecaoConfigItem {
@@ -51,7 +58,7 @@ export const SECOES_CONFIG_RELATORIO: SecaoConfigItem[] = [
     key: 'desenhoConstrutivo',
     numero: '5',
     titulo: 'Desenho Construtivo / Perfil Técnico do Poço',
-    descricao: 'Casing Ø 6", cimentação sanitária (0-24m), laje de proteção e submergência da bomba.',
+    descricao: 'Casing Ø 6", cimentação sanitária (0-24m), laje de proteção e posicionamento de equipamentos.',
     destaque: true,
   },
   {
@@ -131,26 +138,32 @@ const A4SheetScaled: React.FC<{
     const el = sheetRef.current;
     if (!el) return;
     const update = () => {
-      if (el.offsetHeight > 0) {
-        setSheetHeight(el.offsetHeight);
+      const h = Math.max(el.offsetHeight, el.scrollHeight);
+      if (h > 0) {
+        setSheetHeight(h);
       }
     };
     update();
     const ro = new ResizeObserver(update);
     ro.observe(el);
-    return () => ro.disconnect();
+    const mo = new MutationObserver(update);
+    mo.observe(el, { childList: true, subtree: true, attributes: true });
+    return () => {
+      ro.disconnect();
+      mo.disconnect();
+    };
   }, [children]);
 
   const isScaled = scale < 0.995;
 
   return (
     <div
-      className={`w-full flex justify-center overflow-hidden print:!overflow-visible print:!h-auto ${
+      className={`w-full flex justify-center overflow-x-hidden overflow-y-visible print:!overflow-visible print:!h-auto ${
         printBreakBefore ? 'print:break-before-page' : ''
       }`}
       style={
         isScaled
-          ? { height: `${Math.ceil(sheetHeight * scale) + 4}px` }
+          ? { minHeight: `${Math.ceil(sheetHeight * scale) + 8}px` }
           : undefined
       }
     >
@@ -164,7 +177,7 @@ const A4SheetScaled: React.FC<{
               }
             : undefined
         }
-        className="w-[210mm] min-w-[210mm] min-h-[297mm] bg-white text-[#1B2A3B] border border-[#DDE3EC] shadow-md p-[14mm] flex flex-col justify-between print:!transform-none print:border-none print:shadow-none print:p-0 shrink-0"
+        className="w-[210mm] min-w-[210mm] min-h-[297mm] h-fit bg-white text-[#1B2A3B] border border-[#DDE3EC] shadow-md p-[14mm] flex flex-col justify-between print:!transform-none print:border-none print:shadow-none print:p-0 shrink-0"
       >
         {children}
       </div>
@@ -387,9 +400,20 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
     relatorio.cabecalho.responsavelTecnicoCREA ||
       relatorio.dadosPoco?.testeVazaoSEMA?.responsavelTecnicoCREA ||
       relatorio.assinaturaResponsavel?.documento,
-    'DADO A PREENCHER EM CAMPO'
+    '[DADO A PREENCHER EM CAMPO]'
   );
-  const respTecnicoFormatado = `${nomeRespTecnico}, CREA: ${creaRespTecnico}`;
+  const formatarCREA = (valor: string) => {
+    const limpo = valor.trim();
+    if (!limpo || limpo.includes('DADO A PREENCHER')) {
+      return limpo || '[DADO A PREENCHER EM CAMPO]';
+    }
+    return /^CREA\b/i.test(limpo) ? limpo : `CREA: ${limpo}`;
+  };
+  const creaRespFormatado = formatarCREA(creaRespTecnico);
+  const respTecnicoFormatado =
+    !creaRespTecnico || creaRespTecnico.includes('DADO A PREENCHER')
+      ? nomeRespTecnico
+      : `${nomeRespTecnico} — ${/^CREA\b/i.test(creaRespTecnico) ? creaRespTecnico : `CREA ${creaRespTecnico}`}`;
 
   const nomeRespElaboracao = valOuPreencher(
     relatorio.cabecalho.responsavelElaboracaoNome ||
@@ -402,14 +426,84 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
     'Responsável pela Elaboração do Relatório Técnico'
   );
 
+  const coordGeoBruta =
+    relatorio.dadosPoco?.coordenadasGeograficas ||
+    relatorio.cabecalho?.coordenadasGeograficas ||
+    '';
+  const coordExtraidaPreview = extrairCoordenadasGeograficas(
+    relatorio.dadosPoco?.coordenadasGeograficas,
+    relatorio.cabecalho?.coordenadasGeograficas
+  );
+  const utmPreviewStr = (() => {
+    const utmBruto = relatorio.dadosPoco?.coordenadasUTM?.trim();
+    if (
+      utmBruto &&
+      !utmBruto.startsWith('[DADO A PREENCHER') &&
+      utmBruto !== '—' &&
+      utmBruto !== '-'
+    ) {
+      return utmBruto;
+    }
+    if (coordExtraidaPreview) {
+      const utm = latLngParaUTM(coordExtraidaPreview.lat, coordExtraidaPreview.lng);
+      return `${utm.zona}${utm.banda} (E:${utm.easting} / N:${utm.northing})`;
+    }
+    return '[DADO A PREENCHER EM CAMPO]';
+  })();
+
+  // Numeração dinâmica sequencial para nunca pular número quando fotos ou seções opcionais forem omitidas
+  const secNums = (() => {
+    let n = 3;
+    const clienteLocal =
+      isSecaoAtiva('clienteLocal') ? n++ : n;
+    const informacoesPoco =
+      relatorio.dadosPoco?.incluirNoRelatorio && isSecaoAtiva('informacoesPoco')
+        ? n++
+        : n;
+    const desenhoConstrutivo = isSecaoAtiva('desenhoConstrutivo') ? n++ : n;
+    const servicosExecutados = isSecaoAtiva('servicosExecutados') ? n++ : n;
+    const parecerHidrogeologico = isSecaoAtiva('parecerHidrogeologico')
+      ? n++
+      : n;
+    const checklist =
+      isSecaoAtiva('checklist') &&
+      relatorio.checklist &&
+      relatorio.checklist.length > 0
+        ? n++
+        : n;
+    const recomendacoes = isSecaoAtiva('recomendacoes') ? n++ : n;
+    const fotos = isSecaoAtiva('fotos') ? n++ : n;
+    const assinaturas = isSecaoAtiva('assinaturas') ? n++ : n;
+    return {
+      clienteLocal,
+      informacoesPoco,
+      desenhoConstrutivo,
+      servicosExecutados,
+      parecerHidrogeologico,
+      checklist,
+      recomendacoes,
+      fotos,
+      assinaturas,
+    };
+  })();
+
+  const tagPocoPreview = valOuPreencher(relatorio.dadosPoco?.pocoId);
+  const profTotalPreview = valOuPreencher(relatorio.dadosPoco?.profundidadeTotal);
+  const diamRevPreview = valOuPreencher(relatorio.dadosPoco?.diametroRevestimento);
+  const crivoPreview = valOuPreencher(relatorio.dadosPoco?.crivo);
+  const nePreview = valOuPreencher(relatorio.dadosPoco?.nivelEstatico);
+  const ndPreview = valOuPreencher(relatorio.dadosPoco?.nivelDinamico);
+  const vazaoPreview = valOuPreencher(relatorio.dadosPoco?.vazaoTeste);
+  const dataExecPreview = formatarDataBR(relatorio.cabecalho.dataExecucao);
+
   const desenhoConstrutivoTexto = valOuPreencher(
     relatorio.dadosPoco?.desenhoConstrutivo,
-    `• Profundidade Final de Perfuração: 160,00 m (método rotopneumático em rocha basáltica/sedimentar).\n• Coluna de Revestimento Definitivo (Casing): Tubos de Aço Carbono Schedule 40, diâmetro nominal Ø 6" (152,4 mm), conforme ABNT NBR 12212 e NBR 12244.\n• Cimentação Sanitária e Selo Sanitário: Preenchimento do espaço anular com calda de cimento no intervalo de 0,00 m a 24,00 m de profundidade, isolando o aquífero freático superficial contra contaminações.\n• Laje de Proteção Sanitária: Laje de concreto armado em superfície (1,50 m × 1,50 m × 0,15 m) com declividade periférica, tampa de vedação hermética e cavalete com hidrômetro totalizador e tubo guia para medição de nível.\n• Crivo / Seção Filtrante e Pré-Filtro: Posicionado em intervalo produtivo em profundidade [DADO A PREENCHER EM CAMPO — Abaixo de 84,00 m].\n• Profundidade de Instalação da Motobomba Submersa: Instalada a 84,00 m de profundidade — posicionada SEMPRE acima do topo do crivo e garantindo submergência operacional de 19,90 m acima do Nível Dinâmico estabilizado (ND = 64,10 m), superando com folga a submergência mínima normativa de 10,00 m.`
+    `• Poço Identificado: ${tagPocoPreview} | Profundidade Total: ${profTotalPreview}.\n• Revestimento / Diâmetro: ${diamRevPreview}.\n• Crivo / Posição da Bomba: ${crivoPreview}.`
   );
 
   const parecerHidrogeologicoTexto = valOuPreencher(
     relatorio.dadosPoco?.parecerHidrogeologico,
-    `1. PARÂMETROS HIDRODINÂMICOS DO TESTE CONTÍNUO DE 24H A VAZÃO CONSTANTE (13/03/2026):\n• Nível Estático Inicial (NE): 22,40 m\n• Nível Dinâmico Estabilizado (ND): 64,10 m\n• Rebaixamento Máximo Estabilizado (s = ND - NE): 64,10 - 22,40 = 41,70 m\n• Vazão Estabilizada e Recomendada de Operação (Q): 10,29 m³/h (10,286 m³/h = 246,86 m³/dia)\n• Capacidade Específica (Q/s): 10,286 / 41,70 = 0,2467 m³/h/m\n• Rebaixamento Específico (s/Q): 41,70 / 10,286 = 4,0541 m/(m³/h)\n\n2. RECUPERAÇÃO RESIDUAL REAL RECALCULADA (35 MINUTOS APÓS PARADA):\n• Nível da Água ao final de 35 min de recuperação: 33,60 m\n• Rebaixamento Residual Medido (s' aos 35 min): 33,60 - 22,40 = 11,20 m\n• Recuperação Abatida (s - s'): 41,70 - 11,20 = 30,50 m\n• Percentual Real de Recuperação Recalculado: [(41,70 - 11,20) / 41,70] × 100 = 73,14% (73,1% em 35 minutos).\n\n3. TRANSMISSIVIDADE HIDRÁULICA (MÉTODO DE COOPER-JACOB):\n• Fórmula de Cooper-Jacob: T = (0,183 × Q) / Δs, com Q em m³/dia e Δs em m por ciclo logarítmico.\n• Vazão diária equivalente: Q = 10,286 m³/h × 24 h/dia = 246,864 m³/dia.\n• Variação do rebaixamento por ciclo logarítmico (Δs entre t = 10 min e t = 100 min): Δs = 38,50 - 19,50 = 19,00 m.\n• Cálculo da Transmissividade: T = (0,183 × 246,864) / 19,00 = 45,176 / 19,00 = 2,38 m²/dia.\n\n4. CONCLUSÃO E CONDIÇÕES OPERACIONAIS DEFINITIVAS:\nRecomenda-se a operação do poço PT01 à vazão de exploração de 10,29 m³/h, com conjunto motobomba instalado na profundidade única de 84,00 m (garantindo submergência de 19,90 m acima do ND máximo de 64,10 m e posicionamento seguro acima do topo do crivo).`
+    `• Parâmetros aferidos no Poço ${tagPocoPreview} (${dataExecPreview}): NE = ${nePreview} | ND = ${ndPreview} | Vazão = ${vazaoPreview}.\n• Crivo / Posição da Bomba: ${crivoPreview}.`
   );
 
   const equacoesLivro = construirEquacoesLivroRelatorio(relatorio);
@@ -444,6 +538,26 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               )}
             </button>
           )}
+
+          {/* Atalho rápido para ir direto ao Registro Fotográfico no Preview */}
+          <button
+            type="button"
+            onClick={() => {
+              if (!isSecaoAtiva('fotos')) {
+                alternarSecao('fotos');
+              }
+              setTimeout(() => {
+                document
+                  .getElementById('secao-registro-fotografico-preview')
+                  ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }, 80);
+            }}
+            className="px-3 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 text-[#1B2A3B] dark:text-slate-200 hover:border-[#E8A020] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
+            title="Rolar até a seção 10. Registro Fotográfico de Evidências"
+          >
+            <ImageIcon className="w-3.5 h-3.5 text-[#E8A020]" />
+            <span>Ir para Fotos ({fotosOrdenadas.length})</span>
+          </button>
 
           {/* Botão de Configuração de Seções Ativas */}
           <button
@@ -621,15 +735,6 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               <div className="text-[12.5pt] font-extrabold tracking-wide uppercase">
                 RELATÓRIO TÉCNICO DE ENTREGA DE SERVIÇOS
               </div>
-              <div className="text-[9pt] font-mono font-semibold text-slate-200">
-                POÇO TUBULAR PROFUNDO (
-                {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')}) • ORDEM DE
-                SERVIÇO:{' '}
-                {valOuPreencher(
-                  relatorio.cabecalho.contratoOS,
-                  'OS-2026-0842 / CTR-119'
-                )}
-              </div>
             </div>
 
             {/* Quadro 1: Contratante / Interessado (Ao) */}
@@ -674,7 +779,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                       Cidade / UF
                     </td>
                     <td className="py-1.5 px-2.5">
-                      {valOuPreencher(relatorio.cabecalho.cidadeUF, 'Ribeirão Preto - SP')}
+                      {valOuPreencher(relatorio.cabecalho.cidadeUF)}
                     </td>
                     <td className="py-1.5 px-2.5 font-bold uppercase text-[#6B7A8D] text-[7.2pt]">
                       Telefone
@@ -739,7 +844,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                       Registro
                     </td>
                     <td className="py-1.5 px-2.5 font-mono">
-                      CREA: {creaRespTecnico}
+                      {creaRespFormatado}
                     </td>
                   </tr>
                   <tr className="bg-white">
@@ -759,7 +864,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
             {/* 3. CLIENTE E LOCAL (MOVIDO PARA A PÁGINA 1) */}
             {isSecaoAtiva('clienteLocal') && (
               <div>
-                <SectionBar titulo="3. CLIENTE E LOCAL" />
+                <SectionBar titulo={`${secNums.clienteLocal}. CLIENTE E LOCAL`} />
                 <div className="text-[8.5pt] divide-y divide-slate-100 border border-[#DDE3EC]">
                   {[
                     [
@@ -770,15 +875,9 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     ],
                     [
                       'Coordenadas Geográficas',
-                      valOuPreencher(
-                        relatorio.dadosPoco?.coordenadasGeograficas,
-                        'LAT -21.1767 | LON -47.8208 (SIRGAS 2000)'
-                      ),
+                      valOuPreencher(coordGeoBruta),
                       'Coordenadas UTM',
-                      valOuPreencher(
-                        relatorio.dadosPoco?.coordenadasUTM,
-                        '[DADO A PREENCHER EM CAMPO — Zona 23K / SIRGAS 2000]'
-                      ),
+                      utmPreviewStr,
                     ],
                   ].map((row, idx) => (
                     <div
@@ -818,55 +917,80 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
             )}
 
             {/* 4. INFORMAÇÕES DO POÇO (MOVIDO PARA A PÁGINA 1) */}
-            {relatorio.dadosPoco?.incluirNoRelatorio && isSecaoAtiva('informacoesPoco') && (
+            {relatorio.dadosPoco?.incluirNoRelatorio && isSecaoAtiva('informacoesPoco') && (() => {
+              const fmtAntesDepoisPreview = (inicial?: string, final?: string): string => {
+                const ini = (inicial || '').trim();
+                const fim = (final || '').trim();
+                const iniValido =
+                  ini.length > 0 &&
+                  !ini.startsWith('[DADO A PREENCHER') &&
+                  ini !== '—' &&
+                  ini !== '-';
+                const fimValido =
+                  fim.length > 0 &&
+                  !fim.startsWith('[DADO A PREENCHER') &&
+                  fim !== '—' &&
+                  fim !== '-';
+                if (iniValido && fimValido) {
+                  return `Antes: ${ini} | Depois: ${fim}`;
+                }
+                if (fimValido) return fim;
+                if (iniValido) return `Inicial: ${ini}`;
+                return valOuPreencher(final || inicial);
+              };
+
+              return (
               <div>
-                <SectionBar titulo="4. INFORMAÇÕES DO POÇO" />
+                <SectionBar titulo={`${secNums.informacoesPoco}. INFORMAÇÕES DO POÇO`} />
                 <div className="text-[8.5pt] divide-y divide-slate-100 border border-[#DDE3EC]">
                   {[
                     [
                       'Poço (TAG)',
-                      valOuPreencher(relatorio.dadosPoco.pocoId, 'PT01'),
+                      valOuPreencher(relatorio.dadosPoco.pocoId),
                       'Profundidade Total',
-                      valOuPreencher(relatorio.dadosPoco.profundidadeTotal, '160,00 m'),
+                      valOuPreencher(relatorio.dadosPoco.profundidadeTotal),
                     ],
                     [
                       'Diâmetro / Revestimento',
-                      valOuPreencher(
-                        relatorio.dadosPoco.diametroRevestimento,
-                        '6" (152,4 mm) Aço Carbono Schedule 40'
-                      ),
-                      'Crivo / Seção Filtrante',
-                      valOuPreencher(
-                        relatorio.dadosPoco.crivo,
-                        '[DADO A PREENCHER EM CAMPO — Abaixo de 84,00 m]'
+                      valOuPreencher(relatorio.dadosPoco.diametroRevestimento),
+                      'Crivo / Posição da Bomba',
+                      fmtAntesDepoisPreview(
+                        relatorio.dadosPoco.crivoInicial,
+                        relatorio.dadosPoco.crivo
                       ),
                     ],
                     [
                       'Nível Estático (NE)',
-                      valOuPreencher(relatorio.dadosPoco.nivelEstatico, '22,40 m'),
+                      fmtAntesDepoisPreview(
+                        relatorio.dadosPoco.nivelEstaticoInicial,
+                        relatorio.dadosPoco.nivelEstatico
+                      ),
                       'Nível Dinâmico Estab. (ND)',
-                      valOuPreencher(relatorio.dadosPoco.nivelDinamico, '64,10 m'),
-                    ],
-                    [
-                      'Vazão de Operação Rec.',
-                      valOuPreencher(relatorio.dadosPoco.vazaoTeste, '10,29 m³/h'),
-                      'Prof. Instalação da Bomba',
-                      valOuPreencher(
-                        relatorio.dadosPoco.profundidadeBomba,
-                        '84,00 m (Submergência: 19,90 m)'
+                      fmtAntesDepoisPreview(
+                        relatorio.dadosPoco.nivelDinamicoInicial,
+                        relatorio.dadosPoco.nivelDinamico
                       ),
                     ],
                     [
+                      'Vazão de Operação/Teste',
+                      fmtAntesDepoisPreview(
+                        relatorio.dadosPoco.vazaoInicial,
+                        relatorio.dadosPoco.vazaoTeste
+                      ),
                       'Tubo Edutor (Coluna)',
                       valOuPreencher(relatorio.dadosPoco.tuboEdutor),
-                      'Submergência da Bomba',
-                      '19,90 m acima do ND (Mín. 10,00 m)',
                     ],
                     [
                       'Eletrodo Superior',
-                      valOuPreencher(relatorio.dadosPoco.eletrodoSuperior),
+                      fmtAntesDepoisPreview(
+                        relatorio.dadosPoco.eletrodoSuperiorInicial,
+                        relatorio.dadosPoco.eletrodoSuperior
+                      ),
                       'Eletrodo Inferior',
-                      valOuPreencher(relatorio.dadosPoco.eletrodoInferior),
+                      fmtAntesDepoisPreview(
+                        relatorio.dadosPoco.eletrodoInferiorInicial,
+                        relatorio.dadosPoco.eletrodoInferior
+                      ),
                     ],
                   ].map((row, idx) => (
                     <div
@@ -896,7 +1020,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     </span>
                     <span className="text-right font-medium">
                       {valOuPreencher(relatorio.dadosPoco.especificacaoBomba)} — (
-                      {valOuPreencher(relatorio.dadosPoco.motobombaEstado, 'Novo').toUpperCase()})
+                      {valOuPreencher(relatorio.dadosPoco.motobombaEstado, 'Usado').toUpperCase()})
                     </span>
                   </div>
                   <div className="bg-white px-3 py-1.5 flex items-center justify-between gap-4">
@@ -905,12 +1029,13 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     </span>
                     <span className="text-right font-medium">
                       {valOuPreencher(relatorio.dadosPoco.painelEletrico)} — (
-                      {valOuPreencher(relatorio.dadosPoco.painelEstado, 'Novo').toUpperCase()})
+                      {valOuPreencher(relatorio.dadosPoco.painelEstado, 'Usado').toUpperCase()})
                     </span>
                   </div>
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
 
           <RodapePadrao relatorio={relatorio} />
@@ -927,20 +1052,83 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
             {/* 5. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO */}
             {isSecaoAtiva('desenhoConstrutivo') && (
               <div>
-                <SectionBar titulo="5. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO" />
+                <SectionBar titulo={`${secNums.desenhoConstrutivo}. DESENHO CONSTRUTIVO / PERFIL TÉCNICO DO POÇO`} />
                 <div className="border border-[#DDE3EC] bg-[#FAFBFD] px-3 py-2 text-[8.2pt] leading-relaxed whitespace-pre-wrap">
                   {desenhoConstrutivoTexto}
                 </div>
               </div>
             )}
 
+            {/* QUADRO DE DIMENSIONAMENTO HIDRÁULICO E ELÉTRICO DA MOTOBOMBA (OPCIONAL) */}
+            {relatorio.dadosPoco?.dimensionamentoBomba?.ativo && (() => {
+              const resDim = calcularDimensionamentoBomba(relatorio.dadosPoco);
+              const cfgDim = relatorio.dadosPoco.dimensionamentoBomba!;
+              return (
+                <div>
+                  <SectionBar titulo="DIMENSIONAMENTO HIDRÁULICO E ELÉTRICO DO CONJUNTO MOTOBOMBA (ABNT NBR 12244)" />
+                  <div className="text-[8pt] divide-y divide-slate-100 border border-[#DDE3EC]">
+                    {[
+                      [
+                        'Vazão de Projeto (Q)',
+                        `${fmtNumeroSEMA(resDim.vazaoProjetoM3h, 2)} m³/h (${fmtNumeroSEMA(resDim.vazaoProjetoLs, 2)} L/s)`,
+                        'Altura Geométrica (ND + Desnível Ext.)',
+                        `${fmtNumeroSEMA(resDim.alturaGeometricaTotalM, 2)} m (${fmtNumeroSEMA(resDim.nivelDinamicoM, 1)} m + ${fmtNumeroSEMA(resDim.desnivelExternoM, 1)} m)`,
+                      ],
+                      [
+                        'Perda de Carga no Edutor (ΔH int)',
+                        `${fmtNumeroSEMA(resDim.perdaCargaEdutorMca, 2)} m.c.a. (${cfgDim.diametroEdutorPol} ${cfgDim.materialEdutor})`,
+                        'Perda Adutora + Singularidades',
+                        `${fmtNumeroSEMA(resDim.perdaCargaAdutoraMca + resDim.perdaCargaLocalizadaMca, 2)} m.c.a. + Pres ${fmtNumeroSEMA(resDim.pressaoResidualMca, 1)} m.c.a.`,
+                      ],
+                      [
+                        'Altura Manométrica Total (AMT)',
+                        `${fmtNumeroSEMA(resDim.amtTotalMca, 2)} m.c.a.`,
+                        'Potência Hidráulica / Motor Recomendado',
+                        `Phid = ${fmtNumeroSEMA(resDim.potenciaHidraulicaCV, 2)} CV → Motor: ${fmtNumeroSEMA(resDim.potenciaMotorRecomendadaCV, 1).replace(',0', '')} CV (${fmtNumeroSEMA(resDim.potenciaMotorRecomendadaKW, 2)} kW)`,
+                      ],
+                      [
+                        'Velocidade no Edutor',
+                        `v = ${fmtNumeroSEMA(resDim.velocidadeEdutorMs, 2)} m/s`,
+                        'Alimentação / Cabo PP Submersível',
+                        `${cfgDim.tensaoAlimentacao} (I ≈ ${fmtNumeroSEMA(resDim.correnteEstimadaA, 1)} A) | Cabo 3x${fmtNumeroSEMA(resDim.bitolaCaboRecomendadaMm2, 1).replace(',0', '')} mm² (ΔV = ${fmtNumeroSEMA(resDim.quedaTensaoCalculadaPercent, 2)}%)`,
+                      ],
+                    ].map((row, idx) => (
+                      <div
+                        key={idx}
+                        className={`grid grid-cols-2 px-3 py-1.5 ${
+                          idx % 2 === 0 ? 'bg-[#F5F7FA]' : 'bg-white'
+                        }`}
+                      >
+                        <div className="flex justify-between pr-4 gap-2">
+                          <span className="font-bold uppercase text-[#6B7A8D] text-[7.2pt] shrink-0">
+                            {row[0]}
+                          </span>
+                          <span className="font-mono text-right font-semibold">
+                            {row[1]}
+                          </span>
+                        </div>
+                        <div className="flex justify-between pl-4 gap-2">
+                          <span className="font-bold uppercase text-[#6B7A8D] text-[7.2pt] shrink-0">
+                            {row[2]}
+                          </span>
+                          <span className="font-mono text-right font-semibold">
+                            {row[3]}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* 6. SERVIÇOS TÉCNICOS EXECUTADOS */}
             {isSecaoAtiva('servicosExecutados') && (
               <div>
-                <SectionBar titulo="6. SERVIÇOS TÉCNICOS EXECUTADOS" />
+                <SectionBar titulo={`${secNums.servicosExecutados}. SERVIÇOS TÉCNICOS EXECUTADOS`} />
                 <div className="mb-2.5">
                   <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                    6.1 Memorial Descritivo das Etapas Executadas (ABNT NBR 12212 / NBR 12244)
+                    {secNums.servicosExecutados}.1 Memorial Descritivo das Etapas Executadas (ABNT NBR 12212 / NBR 12244)
                   </span>
                   <p className="text-[8.2pt] leading-relaxed whitespace-pre-wrap border border-[#DDE3EC] bg-white p-2.5">
                     {valOuPreencher(relatorio.descricaoServico)}
@@ -950,7 +1138,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                 {servicosValidos.length > 0 && (
                   <div className="mb-2.5">
                     <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                      6.2 Quadro Quantitativo de Serviços Conduzidos
+                      {secNums.servicosExecutados}.2 Quadro Quantitativo de Serviços Conduzidos
                     </span>
                     <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
                       <thead>
@@ -993,7 +1181,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     {equipeValida.length > 0 && (
                       <div>
                         <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                          6.3 Equipe Técnica Mobilizada
+                          {secNums.servicosExecutados}.3 Equipe Técnica Mobilizada
                         </span>
                         <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
                           <thead>
@@ -1032,7 +1220,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     {materiaisValidos.length > 0 && (
                       <div>
                         <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D] mb-1">
-                          6.4 Materiais e Insumos Aplicados no Poço
+                          {secNums.servicosExecutados}.4 Materiais e Insumos Aplicados no Poço
                         </span>
                         <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
                           <thead>
@@ -1079,139 +1267,176 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
             {/* 7. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO */}
             {isSecaoAtiva('parecerHidrogeologico') && (
               <div>
-                <SectionBar titulo="7. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO" />
+                <SectionBar titulo={`${secNums.parecerHidrogeologico}. PARECER HIDROGEOLÓGICO E VAZÃO RECOMENDADA DE OPERAÇÃO`} />
                 <div className="border border-[#DDE3EC] bg-[#FAFBFD] px-3 py-2 text-[8.2pt] leading-relaxed whitespace-pre-wrap break-words overflow-hidden">
                   {parecerHidrogeologicoTexto}
                 </div>
 
                 {/* Fórmulas Hidrogeológicas em Notação de Livro (Display Math ABNT NBR 14724) */}
-                <div className="mt-2.5 space-y-2">
-                  <div className="text-[7.5pt] font-bold uppercase tracking-wide text-[#1B2A3B] px-1">
-                    Formulação Matemática Hidrogeológica (Notação Editorial ABNT NBR 14724 / NBR 12244):
-                  </div>
-                  {equacoesLivro.secao6.map((eq) => (
-                    <MathFormulaBlock key={eq.id} spec={eq} />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* 8. CHECKLIST DE CONFORMIDADE E SEGURANÇA */}
-            {isSecaoAtiva('checklist') && relatorio.checklist && relatorio.checklist.length > 0 && (
-              <div>
-                <SectionBar titulo="8. CHECKLIST DE CONFORMIDADE E SEGURANÇA" />
-                <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
-                  <thead>
-                    <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
-                      <th className="py-1 px-2 text-left">Item de Verificação Normativa</th>
-                      <th className="py-1 px-2 text-center w-24">Data</th>
-                      <th className="py-1 px-2 text-left">Observação Técnica</th>
-                      <th className="py-1 px-2 text-center w-24">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {relatorio.checklist.map((chk, idx) => (
-                      <tr
-                        key={chk.id}
-                        className={idx % 2 === 0 ? 'bg-[#F2FAF4]' : 'bg-white'}
-                      >
-                        <td className="py-1 px-2 font-medium">
-                          <span className="text-[#27AE60] font-bold mr-1.5">✓</span>
-                          {valOuPreencher(chk.texto)}
-                        </td>
-                        <td className="py-1 px-2 text-center font-mono text-[7.5pt]">
-                          {valOuPreencher(
-                            chk.dataVerificacao,
-                            formatarDataBR(relatorio.cabecalho.dataExecucao)
-                          )}
-                        </td>
-                        <td className="py-1 px-2 text-[7.5pt] text-slate-600">
-                          {valOuPreencher(
-                            chk.observacao,
-                            'Verificado e aprovado sem ressalvas em campo.'
-                          )}
-                        </td>
-                        <td className="py-1 px-2 text-center font-bold text-[7.5pt] text-[#27AE60]">
-                          CONFORME
-                        </td>
-                      </tr>
+                {relatorio.dadosPoco?.testeVazaoSEMA?.ativo && (
+                  <div className="mt-2.5 space-y-2">
+                    <div className="text-[7.5pt] font-bold uppercase tracking-wide text-[#1B2A3B] px-1">
+                      Formulação Matemática Hidrogeológica (Notação Editorial ABNT NBR 14724 / NBR 12244):
+                    </div>
+                    {equacoesLivro.secao6.map((eq) => (
+                      <MathFormulaBlock key={eq.id} spec={eq} />
                     ))}
-                  </tbody>
-                </table>
+                  </div>
+                )}
               </div>
             )}
+          </div>
 
-            {/* 9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO */}
-            {isSecaoAtiva('recomendacoes') && (
-              <div>
-                <SectionBar titulo="9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO" />
-                <div className="space-y-2 text-[8.2pt] border border-[#DDE3EC] bg-white p-3">
-                  <div>
-                    <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D]">
-                      9.1 Diretrizes de Operação e Manutenção Preventiva
-                    </span>
-                    <p className="whitespace-pre-wrap leading-relaxed">
-                      {valOuPreencher(
-                        oc?.recomendacoes,
-                        '1. Operar o poço dentro da vazão de segurança recomendada de 10,29 m³/h, mantendo o conjunto motobomba na profundidade de 84,00 m.\n2. Realizar monitoramento mensal de Nível Estático (NE), Nível Dinâmico (ND), vazão (hidrômetro) e consumo elétrico.\n3. Efetuar análises físico-químicas e bacteriológicas semestrais (Portaria GM/MS nº 888/2021).'
-                      )}
-                    </p>
-                  </div>
-                  <div>
-                    <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D]">
-                      9.2 Observações Técnicas e Retificação de Divergências Documentais
-                    </span>
-                    <p className="whitespace-pre-wrap leading-relaxed">
-                      {valOuPreencher(
-                        oc?.observacoesGerais,
-                        'Unificados todos os parâmetros pelo Teste Contínuo 24h a vazão constante executado em 13/03/2026: NE = 22,40 m, ND = 64,10 m, s = 41,70 m, Q = 10,29 m³/h, Bomba instalada a 84,00 m (acima do topo do crivo e com 19,90 m de submergência acima do ND máximo). Nenhuma pendência remanescente.'
-                      )}
-                    </p>
+          <RodapePadrao relatorio={relatorio} />
+        </A4SheetScaled>
+
+        {/* =====================================================================
+            PÁGINA 3: CHECKLIST, RECOMENDAÇÕES, REGISTRO FOTOGRÁFICO (1:1) E ASSINATURAS
+           ===================================================================== */}
+        {(isSecaoAtiva('checklist') ||
+          isSecaoAtiva('recomendacoes') ||
+          isSecaoAtiva('fotos') ||
+          isSecaoAtiva('assinaturas')) && (
+          <A4SheetScaled scale={escalaEfetiva} printBreakBefore>
+            <div className="space-y-4">
+              {/* Timbre Institucional Padrão */}
+              <TimbreHeaderPadrao relatorio={relatorio} />
+
+              {/* 8. CHECKLIST DE CONFORMIDADE E SEGURANÇA */}
+              {isSecaoAtiva('checklist') && relatorio.checklist && relatorio.checklist.length > 0 && (
+                <div>
+                  <SectionBar titulo={`${secNums.checklist}. CHECKLIST DE CONFORMIDADE E SEGURANÇA`} />
+                  <table className="w-full text-[8pt] border-collapse border border-[#DDE3EC]">
+                    <thead>
+                      <tr className="bg-[#1B2A3B] text-white text-[7.5pt]">
+                        <th className="py-1 px-2 text-left">Item de Verificação Normativa</th>
+                        <th className="py-1 px-2 text-center w-24">Data</th>
+                        <th className="py-1 px-2 text-left">Observação Técnica</th>
+                        <th className="py-1 px-2 text-center w-24">Status</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {relatorio.checklist.map((chk, idx) => (
+                        <tr
+                          key={chk.id}
+                          className={idx % 2 === 0 ? 'bg-[#F2FAF4]' : 'bg-white'}
+                        >
+                          <td className="py-1 px-2 font-medium">
+                            <span className="text-[#27AE60] font-bold mr-1.5">✓</span>
+                            {valOuPreencher(chk.texto)}
+                          </td>
+                          <td className="py-1 px-2 text-center font-mono text-[7.5pt]">
+                            {valOuPreencher(
+                              chk.dataVerificacao,
+                              formatarDataBR(relatorio.cabecalho.dataExecucao)
+                            )}
+                          </td>
+                          <td className="py-1 px-2 text-[7.5pt] text-slate-600">
+                            {valOuPreencher(
+                              chk.observacao,
+                              'Verificado e aprovado sem ressalvas em campo.'
+                            )}
+                          </td>
+                          <td className="py-1 px-2 text-center font-bold text-[7.5pt] text-[#27AE60]">
+                            CONFORME
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* 9. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO */}
+              {isSecaoAtiva('recomendacoes') && (
+                <div>
+                  <SectionBar titulo={`${secNums.recomendacoes}. RECOMENDAÇÕES OPERACIONAIS E MANUTENÇÃO`} />
+                  <div className="space-y-2 text-[8.2pt] border border-[#DDE3EC] bg-white p-3">
+                    <div>
+                      <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D]">
+                        {secNums.recomendacoes}.1 Diretrizes de Operação e Manutenção Preventiva
+                      </span>
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        {valOuPreencher(
+                          oc?.recomendacoes,
+                          `1. Operar o poço ${tagPocoPreview} dentro da vazão recomendada (${vazaoPreview}).\n2. Realizar monitoramento mensal de Nível Estático (NE: ${nePreview}), Nível Dinâmico (ND: ${ndPreview}), vazão (hidrômetro) e consumo elétrico.\n3. Efetuar análises físico-químicas e bacteriológicas semestrais (Portaria GM/MS nº 888/2021).`
+                        )}
+                      </p>
+                    </div>
+                    <div>
+                      <span className="block text-[7.5pt] font-bold uppercase text-[#6B7A8D]">
+                        {secNums.recomendacoes}.2 Observações Técnicas e Registros de Campo
+                      </span>
+                      <p className="whitespace-pre-wrap leading-relaxed">
+                        {valOuPreencher(
+                          oc?.observacoesGerais,
+                          `Parâmetros registrados em ${dataExecPreview} para o poço ${tagPocoPreview}: NE = ${nePreview}, ND = ${ndPreview}, Vazão = ${vazaoPreview}.`
+                        )}
+                      </p>
+                    </div>
                   </div>
                 </div>
-              </div>
-            )}
+              )}
 
-            {/* 10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS */}
-            {isSecaoAtiva('fotos') && fotosOrdenadas.length > 0 && (
-              <div>
-                <SectionBar titulo="10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS" />
-                <div className="grid grid-cols-2 gap-x-6 gap-y-4 justify-items-center pt-1">
-                  {fotosOrdenadas.map((foto, index) => {
+              {/* 10. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS */}
+              {isSecaoAtiva('fotos') && (
+                <div id="secao-registro-fotografico-preview">
+                  <SectionBar titulo={`${secNums.fotos}. REGISTRO FOTOGRÁFICO DE EVIDÊNCIAS`} />
+                <div className="photo-evidence-grid grid grid-cols-2 print:grid-cols-2 gap-4 pt-1">
+                  {(fotosOrdenadas.length > 0
+                    ? fotosOrdenadas
+                    : [
+                        {
+                          id: 'placeholder-foto-1',
+                          urlBase64: '',
+                          legenda: `[FOTO REAL OBRIGATÓRIA: Evidência #1 — Conj. Motobomba / Cavalete, data ${dataExecPreview}, Poço ${tagPocoPreview}]`,
+                          timestamp: 0,
+                          ordem: 1,
+                        },
+                        {
+                          id: 'placeholder-foto-2',
+                          urlBase64: '',
+                          legenda: `[FOTO REAL OBRIGATÓRIA: Evidência #2 — Quadro de Comando / Medição em Campo, data ${dataExecPreview}, Poço ${tagPocoPreview}]`,
+                          timestamp: 0,
+                          ordem: 2,
+                        },
+                      ]
+                  ).map((foto, index) => {
                     const temImagemReal = Boolean(
                       foto.urlBase64 && foto.urlBase64.trim().startsWith('data:image')
                     );
                     const textoLegenda = valOuPreencher(
                       foto.legenda,
-                      `[FOTO REAL OBRIGATÓRIA: Evidência #${index + 1} em campo, data ${formatarDataBR(
-                        relatorio.cabecalho.dataExecucao
-                      )}, GPS LAT -21.1767 LON -47.8208]`
+                      `[FOTO REAL OBRIGATÓRIA: Evidência #${index + 1} em campo, data ${dataExecPreview}, Poço ${tagPocoPreview}]`
                     );
                     return (
                       <div
                         key={foto.id}
-                        className="w-full flex flex-col break-inside-avoid border border-[#DDE3EC] bg-[#F7F9FC]"
+                        className="photo-evidence-card w-full flex flex-col break-inside-avoid border border-gray-300 bg-white p-2 rounded-xs"
                       >
-                        {temImagemReal ? (
-                          <div className="w-full h-[58mm] bg-slate-100 border-b border-[#DDE3EC] overflow-hidden flex items-center justify-center">
+                        <div className="photo-evidence-square relative w-full aspect-square overflow-hidden bg-slate-100 border border-gray-200">
+                          {temImagemReal ? (
                             <img
                               src={foto.urlBase64}
                               alt={textoLegenda}
-                              className="w-full h-full object-cover"
+                              className="w-full h-full object-cover block"
                             />
-                          </div>
-                        ) : (
-                          <div className="w-full min-h-[38mm] bg-[#FFFBEB] border-b border-dashed border-[#E8A020] p-3 flex flex-col items-center justify-center text-center gap-1.5">
-                            <Camera className="w-5 h-5 text-[#E8A020]" />
-                            <span className="text-[7.5pt] font-mono font-bold text-[#1B2A3B] uppercase">
-                              ESPAÇO RESERVADO PARA FOTOGRAFIA REAL DE CAMPO (SEM FOTOS ILUSTRATIVAS)
-                            </span>
-                            <span className="text-[7.5pt] font-mono text-slate-700 leading-snug">
-                              {textoLegenda}
-                            </span>
-                          </div>
-                        )}
-                        <div className="px-2.5 py-1.5 text-[7.5pt] leading-snug text-[#1B2A3B] font-medium">
+                          ) : (
+                            <div className="w-full h-full bg-[#FFFBEB] border border-dashed border-[#E8A020] p-3 flex flex-col items-center justify-center text-center gap-1.5">
+                              <ImageIcon className="w-5 h-5 text-[#E8A020]" />
+                              <span className="text-[7.5pt] font-mono font-bold text-[#1B2A3B] uppercase">
+                                ESPAÇO RESERVADO PARA FOTOGRAFIA REAL DE CAMPO (1:1)
+                              </span>
+                              <span className="text-[7.5pt] font-mono text-slate-700 leading-snug">
+                                {textoLegenda}
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                        <div className="pt-2 px-1 text-[8pt] leading-snug text-[#1B2A3B] font-medium break-words">
+                          <span className="font-bold text-slate-700">
+                            Foto {String(index + 1).padStart(2, '0')}:
+                          </span>{' '}
                           {textoLegenda}
                         </div>
                       </div>
@@ -1221,15 +1446,15 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               </div>
             )}
 
-            {/* 11. ASSINATURAS */}
+            {/* ASSINATURAS (numeração dinâmica: 10 sem fotos, 11 com fotos) */}
             {isSecaoAtiva('assinaturas') && (
               <div>
-                <SectionBar titulo="11. ASSINATURAS" />
+                <SectionBar titulo={`${secNums.assinaturas}. ASSINATURAS`} />
                 <div className="border border-[#DDE3EC] bg-[#FAFBFD] p-4 text-[8.5pt] break-inside-avoid">
                   <p className="text-[8pt] text-slate-600 mb-6 text-center">
                     Declaramos que os serviços referentes à{' '}
                     <strong>{valOuPreencher(relatorio.cabecalho.contratoOS)}</strong> no{' '}
-                    <strong>Poço {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')}</strong>{' '}
+                    <strong>Poço {tagPocoPreview}</strong>{' '}
                     foram integralmente executados, comissionados e documentados em conformidade com as
                     normas técnicas <strong>ABNT NBR 12212 e ABNT NBR 12244</strong>.
                   </p>
@@ -1289,6 +1514,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
           {/* Rodapé Padrão do Documento */}
           <RodapePadrao relatorio={relatorio} />
         </A4SheetScaled>
+        )}
 
         {/* =====================================================================
             ANEXO I — RELATÓRIO ESPECIALIZADO DE TESTE DE BOMBEAMENTO (DEPOIS DE TODO O RELATÓRIO PRINCIPAL)
@@ -1312,39 +1538,14 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               horaInicioRecuperacao: '18:10:00',
               dataFinalRecuperacao: relatorio.cabecalho.dataExecucao || '2026-03-13',
               horaFinalRecuperacao: '18:45:00',
-              tempoRecuperacaoMinutos: '35',
-              nivelRecuperacaoFinalM: '33,60',
-              vazaoOutorgaRecomendadaM3h: '10,29',
+              tempoRecuperacaoMinutos: '',
+              nivelRecuperacaoFinalM: '',
+              vazaoOutorgaRecomendadaM3h: '',
               regimeBombeamentoHorasDia: '16',
-              etapas: relatorio.dadosPoco?.testeVazaoSEMA?.etapas || [
-                {
-                  id: 'step-1',
-                  etapa: 1,
-                  duracaoMinutos: 120,
-                  vazaoM3h: '6,50',
-                  nivelDinamicoM: '46,20',
-                  observacao: '1ª Etapa Escalonada — Regime Laminar Predominante',
-                },
-                {
-                  id: 'step-2',
-                  etapa: 2,
-                  duracaoMinutos: 120,
-                  vazaoM3h: '8,40',
-                  nivelDinamicoM: '54,80',
-                  observacao: '2ª Etapa Escalonada — Transição Hidrodinâmica',
-                },
-                {
-                  id: 'step-3',
-                  etapa: 3,
-                  duracaoMinutos: 240,
-                  vazaoM3h: '10,29',
-                  nivelDinamicoM: '64,10',
-                  observacao: '3ª Etapa Nominal Estabilizada — Vazão Recomendada (24h)',
-                },
-              ],
+              etapas: relatorio.dadosPoco?.testeVazaoSEMA?.etapas || [],
             };
             const calcSEMA = calcularParametrosStepDrawdownSEMA(
-              relatorio.dadosPoco?.nivelEstatico || '22,40 m',
+              relatorio.dadosPoco?.nivelEstatico || '0,00 m',
               testeSEMA
             );
 
@@ -1353,21 +1554,21 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               tituloEixoY: string,
               labelEixoX: string,
               pontos: { s: number; t: number }[],
-              tMaxLog: number
+              tMaxPiso: number
             ) => {
               const validos = pontos.filter((p) => p.s >= 0 && p.t >= 1);
-              const minS =
-                validos.length > 0
-                  ? Math.max(
-                      0,
-                      Math.floor(Math.min(...validos.map((p) => p.s)) - 1)
-                    )
-                  : 0;
-              const maxS =
-                validos.length > 0
-                  ? Math.ceil(Math.max(...validos.map((p) => p.s)) + 2)
-                  : 45;
-              const spanS = Math.max(5, maxS - minS);
+              const { min: minS, max: maxS, ticks: ticksS } =
+                calcularDominioRebaixamentoGrafico(
+                  validos.map((p) => p.s),
+                  45,
+                  false
+                );
+              const { tMax: tMaxLog, ticks: decadasPrincipais } =
+                calcularEscalaTempoLogGrafico(
+                  validos.map((p) => p.t),
+                  tMaxPiso
+                );
+              const spanS = Math.max(1, maxS - minS);
               const logMax = Math.log10(tMaxLog);
 
               const W_SVG = 560;
@@ -1385,14 +1586,6 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
               };
               const toY = (sVal: number) =>
                 PAD_T + PH - ((sVal - minS) / spanS) * PH;
-
-              const passoS = spanS > 28 ? 5 : 2;
-              const ticksS: number[] = [];
-              for (let v = minS; v <= maxS; v += passoS) ticksS.push(v);
-
-              const decadasPrincipais = [1, 2, 5, 10, 20, 50, 100, 200, 400, 600, 1000].filter(
-                (d) => d <= tMaxLog
-              );
 
               const pathD = validos
                 .map(
@@ -1539,11 +1732,11 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                       </span>
                       <span>
                         <strong>Poço:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')} |{' '}
+                        {tagPocoPreview} |{' '}
                         <strong>N.E.:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco?.nivelEstatico, '22,40 m')} |{' '}
-                        <strong>Bomba:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco?.profundidadeBomba, '84,00 m')}
+                        {nePreview} |{' '}
+                        <strong>Crivo:</strong>{' '}
+                        {crivoPreview}
                       </span>
                       <span>
                         <strong>Data:</strong>{' '}
@@ -1625,7 +1818,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                         calcSEMA.leiturasBombeamentoCalc
                           .filter((l) => l.sMed !== null)
                           .map((l) => ({ s: l.sMed as number, t: l.tMin })),
-                        600
+                        400
                       )}
                     </div>
                   </div>
@@ -1643,10 +1836,12 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     <div className="text-[7pt] font-mono bg-[#F5F7FA] border border-[#DDE3EC] px-2.5 py-1.5 flex flex-wrap justify-between gap-2">
                       <span>
                         <strong>Poço:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco?.pocoId, 'PT01')} |{' '}
+                        {tagPocoPreview} |{' '}
                         <strong>N.E.:</strong>{' '}
-                        {valOuPreencher(relatorio.dadosPoco?.nivelEstatico, '22,40 m')} |{' '}
-                        <strong>ND máx.:</strong> 64,10 m (s máx = 41,70 m)
+                        {fmtNumeroSEMA(calcSEMA.neInicial, 2, ' m')} |{' '}
+                        <strong>ND máx.:</strong>{' '}
+                        {fmtNumeroSEMA(calcSEMA.ndEstabilizadoFinalM, 2, ' m')} (s máx ={' '}
+                        {fmtNumeroSEMA(calcSEMA.rebaixamentoMaximoM, 2, ' m')})
                       </span>
                       <span>
                         <strong>Período Recup.:</strong>{' '}
@@ -1658,7 +1853,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                         ({valOuPreencher(testeSEMA.horaInicioRecuperacao, '18:10:00')} às{' '}
                         {valOuPreencher(testeSEMA.horaFinalRecuperacao, '18:45:00')}) |{' '}
                         <strong className="text-[#27AE60]">
-                          Recuperação Real Recalculada (35 min):{' '}
+                          Recuperação Real ({testeSEMA.tempoRecuperacaoMinutos || '35'} min):{' '}
                           {fmtNumeroSEMA(calcSEMA.percentualRecuperacao, 1, '%')}
                         </strong>
                       </span>
@@ -1715,10 +1910,9 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
 
                     <div className="space-y-1.5">
                       <div className="text-[7.3pt] bg-[#F2FAF4] border border-[#27AE60]/40 px-2.5 py-1.5 text-[#1B2A3B]">
-                        <strong>Memória do Cálculo da Recuperação Real (aos 35 min):</strong>{' '}
-                        Rebaixamento máximo no bombeamento <span className="font-mono">s = 64,10 - 22,40 = 41,70 m</span> | Rebaixamento residual aos 35 min{' '}
-                        <span className="font-mono">s&apos; = 33,60 - 22,40 = 11,20 m</span> | Coluna recuperada:{' '}
-                        <span className="font-mono">41,70 - 11,20 = 30,50 m</span>.
+                        <strong>Memória do Cálculo da Recuperação Real ({testeSEMA.tempoRecuperacaoMinutos || '35'} min):</strong>{' '}
+                        Rebaixamento máximo no bombeamento <span className="font-mono">s = {fmtNumeroSEMA(calcSEMA.rebaixamentoMaximoM, 2)} m</span> | Percentual recuperado:{' '}
+                        <span className="font-mono">{fmtNumeroSEMA(calcSEMA.percentualRecuperacao, 1, '%')}</span>.
                       </div>
                       {equacoesLivro.anexoI2.map((eq) => (
                         <MathFormulaBlock key={eq.id} spec={eq} compact />
@@ -1855,10 +2049,11 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                               </strong>
                             </div>
                             <div className="pt-1 border-t border-slate-200">
-                              <strong>Verificação na 3ª Etapa (Q = 10,29 m³/h):</strong>
+                              <strong>Verificação na Última Etapa (Q = {fmtNumeroSEMA(calcSEMA.vazaoEstabilizadaFinalM3h, 2)} m³/h):</strong>
                               <br />
-                              • Perda Laminar (B·Q) = <strong>30,78 m (73,8%)</strong> | Perda Turbulenta (C·Q²) = <strong>10,92 m (26,2%)</strong>
-                              <br />• Rebaixamento Calculado: <strong>s calc = 30,78 + 10,92 = 41,70 m</strong> (= s med)
+                              • Eficiência Hidráulica Calculada:{' '}
+                              <strong>{fmtNumeroSEMA(calcSEMA.eficienciaUltimaEtapaPct, 1, '%')}</strong>{' '}
+                              | Rebaixamento Máximo: <strong>{fmtNumeroSEMA(calcSEMA.rebaixamentoMaximoM, 2)} m</strong>
                             </div>
                           </div>
                         </div>
@@ -1869,12 +2064,14 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                           </div>
                           <div className="font-mono space-y-1 text-[7.6pt]">
                             <div>
-                              • Vazão Constante (Q): 10,286 m³/h ={' '}
-                              <strong>246,864 m³/dia</strong>
+                              • Vazão Constante (Q): {fmtNumeroSEMA(calcSEMA.vazaoEstabilizadaFinalM3h, 3)} m³/h ={' '}
+                              <strong>
+                                {fmtNumeroSEMA((calcSEMA.vazaoEstabilizadaFinalM3h ?? 0) * 24, 3)} m³/dia
+                              </strong>
                             </div>
                             <div>
                               • Declividade por ciclo logarítmico (Δs de t=10 a t=100 min):{' '}
-                              <strong>Δs = 19,00 m</strong>
+                              <strong>Δs = {fmtNumeroSEMA(calcSEMA.deltaSCicloM, 2)} m</strong>
                             </div>
                             <div>
                               • Transmissividade Hidráulica:{' '}
@@ -1901,7 +2098,7 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                     <div className="border-2 border-[#1B2A3B] bg-[#F2FAF4] p-3.5 text-[8.2pt]">
                       <div className="font-bold uppercase text-[#1B2A3B] mb-1.5 text-center">
                         CONDIÇÕES DEFINITIVAS E UNIFICADAS DE OPERAÇÃO DO POÇO{' '}
-                        {valOuPreencher(relatorio.dadosPoco.pocoId, 'PT01')}
+                        {tagPocoPreview}
                       </div>
                       <div className="grid grid-cols-3 gap-3 font-mono text-center">
                         <div className="bg-white border border-[#DDE3EC] p-2">
@@ -1909,10 +2106,10 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                             Vazão Recomendada (Q)
                           </span>
                           <span className="text-[10pt] font-bold text-[#1B2A3B]">
-                            10,29 m³/h
+                            {vazaoPreview}
                           </span>
                           <span className="block text-[6.8pt] text-slate-600">
-                            Regime até 20 h/dia (205,80 m³/dia)
+                            Regime até {testeSEMA.regimeBombeamentoHorasDia || '16'} h/dia
                           </span>
                         </div>
                         <div className="bg-white border border-[#DDE3EC] p-2">
@@ -1920,21 +2117,21 @@ export const A4Preview: React.FC<A4PreviewProps> = ({
                             Nível Dinâmico Previsto (ND)
                           </span>
                           <span className="text-[10pt] font-bold text-[#1B2A3B]">
-                            64,10 m
+                            {ndPreview}
                           </span>
                           <span className="block text-[6.8pt] text-slate-600">
-                            NE = 22,40 m | Rebaixamento s = 41,70 m
+                            NE = {nePreview} | s = {fmtNumeroSEMA(calcSEMA.rebaixamentoMaximoM, 2)} m
                           </span>
                         </div>
                         <div className="bg-white border border-[#DDE3EC] p-2">
                           <span className="block text-[7pt] uppercase text-[#6B7A8D]">
-                            Prof. Instalação da Bomba
+                            Crivo / Posição da Bomba
                           </span>
                           <span className="text-[10pt] font-bold text-[#27AE60]">
-                            84,00 m
+                            {crivoPreview}
                           </span>
                           <span className="block text-[6.8pt] text-slate-600">
-                            Acima do crivo | Submergência: 19,90 m (≥ 10 m)
+                            Prof. Total: {profTotalPreview}
                           </span>
                         </div>
                       </div>

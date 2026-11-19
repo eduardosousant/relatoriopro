@@ -1,8 +1,14 @@
-import React, { useState, useRef } from 'react';
-import { CadastroPoco, RelatorioTecnico } from '../types/relatorio';
+import React, { useState, useRef, useEffect } from 'react';
+import {
+  CadastroCliente,
+  CadastroPoco,
+  RelatorioTecnico,
+} from '../types/relatorio';
+import { pertenceAoCliente } from '../utils/clienteMatch';
 import { formatarDataBR } from '../services/pdfExportService';
 import { PocoHydroChart } from './PocoHydroChart';
 import { PocoLocationMap } from './PocoLocationMap';
+import { DetectorAquiferoCard } from './DetectorAquiferoCard';
 import {
   Plus,
   Search,
@@ -16,16 +22,28 @@ import {
   FileDown,
   Check,
   X,
+  FileSpreadsheet,
+  GitMerge,
+  ArrowRight,
+  AlertTriangle,
+  Loader2,
 } from 'lucide-react';
 
 interface PocosManagerProps {
   pocos: CadastroPoco[];
+  clientes?: CadastroCliente[];
+  pocoInicialSelecionadoUuid?: string;
   relatorios: RelatorioTecnico[];
   onSalvarPoco: (poco: CadastroPoco) => Promise<void>;
   onExcluirPoco: (uuid: string) => Promise<void>;
+  onMesclarPocos?: (
+    pocoOrigemUuid: string,
+    pocoDestinoUuid: string
+  ) => Promise<void>;
   onIniciarNovaOSNoPoco: (poco: CadastroPoco) => void;
   onAbrirRelatorio: (relatorio: RelatorioTecnico, irParaPreview?: boolean) => void;
   onExportarPDFRelatorio: (relatorio: RelatorioTecnico) => void;
+  onAbrirLancamentoRapido?: (clienteUuid?: string, pocoUuid?: string) => void;
 }
 
 /**
@@ -40,27 +58,43 @@ function extrairNumero(valor?: string): number | null {
 
 export const PocosManager: React.FC<PocosManagerProps> = ({
   pocos,
+  clientes = [],
+  pocoInicialSelecionadoUuid,
   relatorios,
   onSalvarPoco,
   onExcluirPoco,
+  onMesclarPocos,
   onIniciarNovaOSNoPoco,
   onAbrirRelatorio,
   onExportarPDFRelatorio,
+  onAbrirLancamentoRapido,
 }) => {
   const [busca, setBusca] = useState<string>('');
+  const [filtroClienteUuid, setFiltroClienteUuid] = useState<string>('');
   const [pocoSelecionadoUuid, setPocoSelecionadoUuid] = useState<string>(
-    pocos[0]?.uuid || ''
+    pocoInicialSelecionadoUuid || pocos[0]?.uuid || ''
   );
+
+  useEffect(() => {
+    if (pocoInicialSelecionadoUuid) {
+      setPocoSelecionadoUuid(pocoInicialSelecionadoUuid);
+    }
+  }, [pocoInicialSelecionadoUuid]);
   const [modoFormulario, setModoFormulario] = useState<
     'fechado' | 'novo' | 'editar'
   >('fechado');
   const [confirmarExclusaoUuid, setConfirmarExclusaoUuid] = useState<
     string | null
   >(null);
+  const [modalMesclarAberto, setModalMesclarAberto] = useState<boolean>(false);
+  const [pocoOrigemMesclaUuid, setPocoOrigemMesclaUuid] = useState<string>('');
+  const [pocoDestinoMesclaUuid, setPocoDestinoMesclaUuid] = useState<string>('');
+  const [mesclandoPocos, setMesclandoPocos] = useState<boolean>(false);
   const detalhesPocoRef = useRef<HTMLDivElement | null>(null);
 
   const criarFormularioVazio = (): CadastroPoco => ({
     uuid: `poco-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+    clienteUuid: '',
     tag: `PT0${pocos.length + 1}`,
     nomeIdentificacao: '',
     cliente: '',
@@ -95,8 +129,15 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '');
 
+  const clienteFiltroAtivo = filtroClienteUuid
+    ? clientes.find((c) => c.uuid === filtroClienteUuid)
+    : undefined;
+
   const termo = normalizar(busca.trim());
   const pocosFiltrados = pocos.filter((p) => {
+    if (clienteFiltroAtivo && !pertenceAoCliente(p, clienteFiltroAtivo)) {
+      return false;
+    }
     if (!termo) return true;
     return (
       normalizar(p.tag).includes(termo) ||
@@ -108,7 +149,8 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
   });
 
   const pocoAtivo =
-    pocos.find((p) => p.uuid === pocoSelecionadoUuid) || pocosFiltrados[0];
+    pocosFiltrados.find((p) => p.uuid === pocoSelecionadoUuid) ||
+    pocosFiltrados[0];
 
   // Filtra todos os relatórios vinculados a um poço (por pocoUuid ou correspondência de TAG + Cliente)
   const obterRelatoriosDoPoco = (poco?: CadastroPoco): RelatorioTecnico[] => {
@@ -181,14 +223,30 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={abrirNovoCadastro}
-          className="px-4 py-2.5 rounded-lg text-xs font-bold bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] shadow-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
-        >
-          <Plus className="w-4 h-4" />
-          Cadastrar Novo Poço
-        </button>
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {onAbrirLancamentoRapido && (
+            <button
+              type="button"
+              onClick={() =>
+                onAbrirLancamentoRapido(pocoAtivo?.clienteUuid, pocoAtivo?.uuid)
+              }
+              className="px-4 py-2.5 rounded-lg text-xs font-bold bg-[#1B2A3B] hover:bg-slate-800 text-[#E8A020] shadow-xs transition-colors flex items-center gap-1.5 whitespace-nowrap cursor-pointer"
+              title="Lançar várias O.S. retroativas (2024–2026) por Grade Rápida, Excel/CSV ou Múltiplos PDFs"
+            >
+              <FileSpreadsheet className="w-4 h-4" />
+              <span>⚡ Lançamento Rápido de Histórico (PDF / Excel)</span>
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={abrirNovoCadastro}
+            className="px-4 py-2.5 rounded-lg text-xs font-bold bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] shadow-xs transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            Cadastrar Novo Poço
+          </button>
+        </div>
       </div>
 
       {/* Formulário Modal / Card de Criação e Edição de Poço */}
@@ -261,6 +319,47 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
                   className="w-full px-3 py-2 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950"
                 />
               </div>
+
+              {clientes.length > 0 && (
+                <div className="sm:col-span-4">
+                  <label className="block text-[11px] font-bold uppercase text-[#6B7A8D] mb-1">
+                    Vincular a Cliente Cadastrado (Opcional — preenche dados automaticamente)
+                  </label>
+                  <select
+                    value={formPoco.clienteUuid || ''}
+                    onChange={(e) => {
+                      const cliUuid = e.target.value;
+                      const cli = clientes.find((c) => c.uuid === cliUuid);
+                      if (cli) {
+                        setFormPoco({
+                          ...formPoco,
+                          clienteUuid: cli.uuid,
+                          cliente: cli.razaoSocial,
+                          clienteCNPJ: cli.cnpjCpf || formPoco.clienteCNPJ,
+                          cidadeUF: cli.cidadeUF || formPoco.cidadeUF,
+                          contatoLocal: cli.contatoPrincipal || formPoco.contatoLocal,
+                          telefoneContato: cli.telefone || formPoco.telefoneContato,
+                          enderecoLocal:
+                            formPoco.enderecoLocal || cli.enderecoSede || '',
+                        });
+                      } else {
+                        setFormPoco({ ...formPoco, clienteUuid: '' });
+                      }
+                    }}
+                    className="w-full px-3 py-2 text-sm rounded-lg border border-[#E8A020]/50 bg-[#FFFDF7] dark:bg-slate-950"
+                  >
+                    <option value="">
+                      — Selecionar cliente cadastrado ou digitar manualmente abaixo —
+                    </option>
+                    {clientes.map((c) => (
+                      <option key={c.uuid} value={c.uuid}>
+                        {c.razaoSocial}
+                        {c.cnpjCpf ? ` (${c.cnpjCpf})` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
 
               <div className="sm:col-span-3">
                 <label className="block text-[11px] font-bold uppercase text-[#6B7A8D] mb-1">
@@ -465,20 +564,21 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
               </div>
 
               <div className="sm:col-span-2">
-                <label className="block text-[11px] font-bold uppercase text-[#6B7A8D] mb-1">
-                  Aquífero / Formação Geológica
-                </label>
-                <input
-                  type="text"
+                <DetectorAquiferoCard
                   value={formPoco.aquiferoLitologia || ''}
-                  onChange={(e) =>
+                  onChange={(novoValor) =>
                     setFormPoco({
                       ...formPoco,
-                      aquiferoLitologia: e.target.value,
+                      aquiferoLitologia: novoValor,
                     })
                   }
-                  placeholder="Ex: Sistema Aquífero Parecis (Arenito)"
-                  className="w-full px-3 py-2 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950"
+                  coordenadasUTM={formPoco.coordenadasUTM}
+                  cidadeUF={formPoco.cidadeUF}
+                  endereco={formPoco.enderecoLocal}
+                  pocosSupabase={pocos}
+                  relatoriosSupabase={relatorios}
+                  pocoIgnorarUuid={formPoco.uuid}
+                  compacto
                 />
               </div>
 
@@ -626,7 +726,7 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
         <div className="xl:col-span-4 2xl:col-span-3 rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 overflow-hidden xl:sticky xl:top-[76px]">
           <div className="p-4 border-b border-[#DDE3EC] dark:border-slate-800 space-y-3">
             <div className="flex items-center justify-between text-xs font-bold uppercase tracking-wider text-[#6B7A8D]">
-              <span>Poços Cadastrados ({pocos.length})</span>
+              <span>Poços Cadastrados ({pocosFiltrados.length})</span>
             </div>
             <div className="relative">
               <Search className="w-3.5 h-3.5 text-[#6B7A8D] absolute left-3 top-1/2 -translate-y-1/2" />
@@ -638,6 +738,20 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
                 className="w-full pl-8 pr-3 py-2 text-xs rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
               />
             </div>
+            {clientes.length > 0 && (
+              <select
+                value={filtroClienteUuid}
+                onChange={(e) => setFiltroClienteUuid(e.target.value)}
+                className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+              >
+                <option value="">Todos os clientes ({pocos.length})</option>
+                {clientes.map((c) => (
+                  <option key={c.uuid} value={c.uuid}>
+                    Somente: {c.razaoSocial}
+                  </option>
+                ))}
+              </select>
+            )}
           </div>
 
           <div className="divide-y xl:divide-y divide-[#DDE3EC] dark:divide-slate-800 max-h-[260px] xl:max-h-[calc(100vh-220px)] overflow-y-auto grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1">
@@ -752,6 +866,23 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    {onAbrirLancamentoRapido && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onAbrirLancamentoRapido(
+                            pocoAtivo.clienteUuid,
+                            pocoAtivo.uuid
+                          )
+                        }
+                        className="px-3 py-2 text-xs font-bold rounded-lg bg-[#1B2A3B] text-[#E8A020] hover:bg-slate-800 flex items-center gap-1.5 cursor-pointer"
+                        title="Lançar múltiplas O.S. retroativas de 2024 a 2026 para este poço"
+                      >
+                        <FileSpreadsheet className="w-3.5 h-3.5" />
+                        <span>Lançar Histórico (2024–2026)</span>
+                      </button>
+                    )}
+
                     <button
                       type="button"
                       onClick={() => abrirEdicaoCadastro(pocoAtivo)}
@@ -760,6 +891,28 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
                       <Edit3 className="w-3.5 h-3.5" />
                       <span>Editar Poço</span>
                     </button>
+
+                    {onMesclarPocos && pocos.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const outro =
+                            pocos.find(
+                              (p) =>
+                                p.uuid !== pocoAtivo.uuid &&
+                                normalizar(p.cliente) === normalizar(pocoAtivo.cliente)
+                            ) || pocos.find((p) => p.uuid !== pocoAtivo.uuid);
+                          setPocoOrigemMesclaUuid(pocoAtivo.uuid);
+                          setPocoDestinoMesclaUuid(outro?.uuid || '');
+                          setModalMesclarAberto(true);
+                        }}
+                        className="px-3 py-2 text-xs font-bold rounded-lg border border-sky-400/50 bg-sky-50 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 hover:bg-sky-100 dark:hover:bg-sky-900/50 flex items-center gap-1.5 cursor-pointer"
+                        title="Juntar este cadastro errado/duplicado com outro poço existente sem perder as O.S."
+                      >
+                        <GitMerge className="w-3.5 h-3.5" />
+                        <span>Juntar / Mesclar</span>
+                      </button>
+                    )}
 
                     {confirmarExclusaoUuid === pocoAtivo.uuid ? (
                       <div className="flex items-center gap-1.5">
@@ -1074,6 +1227,184 @@ export const PocosManager: React.FC<PocosManagerProps> = ({
           )}
         </div>
       </div>
+
+      {/* MODAL DE MESCLAR / JUNTAR CADASTROS DE POÇOS */}
+      {modalMesclarAberto && onMesclarPocos && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-xl rounded-2xl bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-800 shadow-2xl overflow-hidden">
+            <div className="px-5 py-4 bg-[#1B2A3B] text-white flex items-center justify-between">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 rounded-lg bg-[#E8A020] text-[#1B2A3B]">
+                  <GitMerge className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-sm sm:text-base font-bold">
+                    Juntar / Mesclar Cadastros de Poços
+                  </h3>
+                  <p className="text-[11px] text-white/70">
+                    Transfira todas as O.S. de um cadastro errado para o cadastro correto sem perder o histórico.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setModalMesclarAberto(false)}
+                className="p-1.5 rounded-lg hover:bg-white/10"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {(() => {
+              const origemObj = pocos.find((p) => p.uuid === pocoOrigemMesclaUuid);
+              const destinoObj = pocos.find((p) => p.uuid === pocoDestinoMesclaUuid);
+              const relsOrigem = obterRelatoriosDoPoco(origemObj);
+              const opcoesDestino = [...pocos]
+                .filter((p) => p.uuid !== pocoOrigemMesclaUuid)
+                .sort((a, b) => {
+                  const aMesmo =
+                    origemObj &&
+                    normalizar(a.cliente) === normalizar(origemObj.cliente)
+                      ? 0
+                      : 1;
+                  const bMesmo =
+                    origemObj &&
+                    normalizar(b.cliente) === normalizar(origemObj.cliente)
+                      ? 0
+                      : 1;
+                  if (aMesmo !== bMesmo) return aMesmo - bMesmo;
+                  return a.tag.localeCompare(b.tag, 'pt-BR');
+                });
+
+              return (
+                <div className="p-5 space-y-4 text-xs">
+                  <div className="grid grid-cols-1 gap-3">
+                    <div className="p-3.5 rounded-xl border border-red-200 dark:border-red-900/50 bg-red-50/70 dark:bg-red-950/20 space-y-1.5">
+                      <label className="block text-[11px] font-extrabold uppercase tracking-wider text-red-700 dark:text-red-400">
+                        1. Poço Errado / Duplicado (será removido após transferir as O.S.)
+                      </label>
+                      <select
+                        value={pocoOrigemMesclaUuid}
+                        onChange={(e) => {
+                          const novoOrig = e.target.value;
+                          setPocoOrigemMesclaUuid(novoOrig);
+                          if (pocoDestinoMesclaUuid === novoOrig) {
+                            const outro = pocos.find((p) => p.uuid !== novoOrig);
+                            setPocoDestinoMesclaUuid(outro?.uuid || '');
+                          }
+                        }}
+                        className="w-full px-3 py-2 rounded-lg border border-red-300 dark:border-red-800 bg-white dark:bg-slate-950 font-semibold"
+                      >
+                        {pocos.map((p) => (
+                          <option key={p.uuid} value={p.uuid}>
+                            {p.tag} — {p.cliente} ({p.enderecoLocal || 'Sem local'}) ·{' '}
+                            {obterRelatoriosDoPoco(p).length} O.S.
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="flex justify-center -my-1">
+                      <div className="px-3 py-1 rounded-full bg-[#E8A020]/15 text-[#B9770E] dark:text-[#E8A020] font-bold flex items-center gap-1.5 text-[11px]">
+                        <ArrowRight className="w-3.5 h-3.5 rotate-90" />
+                        <span>Transferir O.S. e unificar em</span>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 rounded-xl border border-emerald-200 dark:border-emerald-900/50 bg-emerald-50/70 dark:bg-emerald-950/20 space-y-1.5">
+                      <label className="block text-[11px] font-extrabold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                        2. Poço Principal / Correto (será mantido)
+                      </label>
+                      <select
+                        value={pocoDestinoMesclaUuid}
+                        onChange={(e) => setPocoDestinoMesclaUuid(e.target.value)}
+                        className="w-full px-3 py-2 rounded-lg border border-emerald-300 dark:border-emerald-800 bg-white dark:bg-slate-950 font-semibold"
+                      >
+                        <option value="">— Selecione o poço destino —</option>
+                        {opcoesDestino.map((p) => (
+                          <option key={p.uuid} value={p.uuid}>
+                            {p.tag} — {p.cliente} ({p.enderecoLocal || 'Sem local'}) ·{' '}
+                            {obterRelatoriosDoPoco(p).length} O.S.
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {origemObj && destinoObj && (
+                    <div className="p-3.5 rounded-xl bg-[#F7F9FC] dark:bg-slate-950 border border-[#DDE3EC] dark:border-slate-800 space-y-1.5 text-[11px] text-[#4A5568] dark:text-slate-300">
+                      <div className="flex items-center gap-1.5 font-bold text-[#1B2A3B] dark:text-slate-100">
+                        <AlertTriangle className="w-4 h-4 text-[#E8A020] shrink-0" />
+                        <span>O que acontecerá ao confirmar:</span>
+                      </div>
+                      <ul className="list-disc pl-5 space-y-1">
+                        <li>
+                          <strong>{relsOrigem.length}</strong>{' '}
+                          {relsOrigem.length === 1
+                            ? 'O.S. / relatório'
+                            : 'O.S. / relatórios'}{' '}
+                          de <strong>{origemObj.tag}</strong> serão movidos para{' '}
+                          <strong>{destinoObj.tag}</strong>, mantendo intactos NE, ND,
+                          Vazão, bomba e datas originais de cada atendimento.
+                        </li>
+                        <li>
+                          Campos vazios do poço destino serão preenchidos com os dados do
+                          cadastro origem (quando existirem).
+                        </li>
+                        <li>
+                          O cadastro duplicado <strong>{origemObj.tag}</strong> será
+                          excluído após a transferência.
+                        </li>
+                      </ul>
+                    </div>
+                  )}
+
+                  <div className="flex justify-end gap-2.5 pt-2 border-t border-[#EEF2F6] dark:border-slate-800">
+                    <button
+                      type="button"
+                      disabled={mesclandoPocos}
+                      onClick={() => setModalMesclarAberto(false)}
+                      className="px-4 py-2 rounded-lg text-xs font-semibold border border-[#DDE3EC] dark:border-slate-700"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      disabled={
+                        mesclandoPocos ||
+                        !pocoOrigemMesclaUuid ||
+                        !pocoDestinoMesclaUuid ||
+                        pocoOrigemMesclaUuid === pocoDestinoMesclaUuid
+                      }
+                      onClick={async () => {
+                        setMesclandoPocos(true);
+                        try {
+                          await onMesclarPocos(
+                            pocoOrigemMesclaUuid,
+                            pocoDestinoMesclaUuid
+                          );
+                          setPocoSelecionadoUuid(pocoDestinoMesclaUuid);
+                          setModalMesclarAberto(false);
+                        } finally {
+                          setMesclandoPocos(false);
+                        }
+                      }}
+                      className="px-4 py-2 rounded-lg text-xs font-bold bg-[#E8A020] hover:bg-[#F5B93A] text-[#1B2A3B] disabled:opacity-45 flex items-center gap-1.5 shadow-xs"
+                    >
+                      {mesclandoPocos ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <GitMerge className="w-4 h-4" />
+                      )}
+                      <span>Confirmar Junção de Poços</span>
+                    </button>
+                  </div>
+                </div>
+              );
+            })()}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

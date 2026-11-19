@@ -314,10 +314,10 @@ export function extrairCoordenadasGeograficas(
       }
     }
 
-    // 3. Tenta par direto de Graus Decimais (ex: "-21.1767, -47.8208" ou "-15.601410 / -56.097892")
+    // 3. Tenta par direto de Graus Decimais (ex: "-21.1767, -47.8208" ou "-9.697831004564103, -54.87525594479767")
     const limpoSemAno = texto.replace(/SIRGAS\s*2000|WGS\s*84/gi, '');
     const decimalPairRegex =
-      /(?:^|[^\d.])([+-]?\d{1,2}[.,]\d{3,8})\s*[°º]?\s*([NSns])?\s*[,;/|\s]+\s*([+-]?\d{1,3}[.,]\d{3,8})\s*[°º]?\s*([EWOLewol])?(?!\d)/;
+      /(?:^|[^\d.])([+-]?\d{1,2}[.,]\d{3,18})\s*[°º]?\s*([NSns])?\s*[,;/|\s]+\s*([+-]?\d{1,3}[.,]\d{3,18})\s*[°º]?\s*([EWOLewol])?(?!\d)/;
     const decMatch = limpoSemAno.match(decimalPairRegex);
     if (decMatch) {
       let lat = parseFloat(decMatch[1].replace(',', '.'));
@@ -418,7 +418,7 @@ export async function renderizarMapaOSMCanvasDataUrl(params: {
     width = 860,
     height = 160,
     layer = 'satellite',
-    pocoTag = 'PT01',
+    pocoTag = '',
   } = params;
 
   const n = Math.pow(2, zoom);
@@ -532,15 +532,18 @@ export async function renderizarMapaOSMCanvasDataUrl(params: {
   ctx.fillStyle = '#1B2A3B';
   ctx.fill();
 
-  // Rótulo TAG do poço ao lado do pino
-  if (pocoTag) {
+  // Rótulo TAG do poço ao lado do pino (com proteção contra corte lateral)
+  const tagLimpa = pocoTag.trim();
+  if (tagLimpa && !tagLimpa.startsWith('[DADO A PREENCHER')) {
     ctx.font = 'bold 12px monospace';
-    const textoTag = pocoTag.toUpperCase();
+    const textoTag = tagLimpa.toUpperCase();
     const tw = ctx.measureText(textoTag).width;
+    const boxW = tw + 12;
+    const labelX = cx + 14 + boxW > width - 8 ? Math.max(8, cx - 14 - boxW) : cx + 14;
     ctx.fillStyle = 'rgba(27, 42, 59, 0.92)';
-    ctx.fillRect(cx + 14, cy - 28, tw + 12, 18);
+    ctx.fillRect(labelX, cy - 28, boxW, 18);
     ctx.fillStyle = '#E8A020';
-    ctx.fillText(textoTag, cx + 20, cy - 15);
+    ctx.fillText(textoTag, labelX + 6, cy - 15);
   }
 
   // Atribuição obrigatória no canto inferior direito

@@ -157,12 +157,163 @@ export function somarMinutosNaHora(
 }
 
 /**
+ * Opções padronizadas de Etapa / Duração do Teste de Bombeamento (ABNT NBR 12.244 / SEMA / SANEAGO)
+ */
+export const OPCOES_ETAPA_DURACAO = [
+  { valor: '6H', rotulo: '6H (360 min — Avaliação Rápida)', horas: 6, minutos: 360 },
+  { valor: '12H', rotulo: '12H (720 min — Preventiva Q < 5 m³/h)', horas: 12, minutos: 720 },
+  { valor: '24H', rotulo: '24H (1.440 min — Padrão NBR 12.244)', horas: 24, minutos: 1440 },
+  { valor: '36H', rotulo: '36H (2.160 min — Prolongamento +12h)', horas: 36, minutos: 2160 },
+  { valor: '48H', rotulo: '48H (2.880 min — Órgão Gestor / SANEAGO)', horas: 48, minutos: 2880 },
+  { valor: '72H', rotulo: '72H (4.320 min — Fraturado / Contínuo)', horas: 72, minutos: 4320 },
+  { valor: 'PERSONALIZADO', rotulo: 'Personalizado (digitar)...', horas: null, minutos: null },
+] as const;
+
+/**
+ * Soma `minutos` a uma data (YYYY-MM-DD) + hora (HH:MM:SS), retornando a nova data e hora com virada de dia.
+ */
+export function calcularDataHoraComMinutos(
+  dataBase = '2026-03-13',
+  horaBase = '11:30:00',
+  minutosAdicionais = 1440
+): { data: string; hora: string } {
+  const [anoStr, mesStr, diaStr] = (dataBase || '2026-03-13').split('-');
+  const ano = parseInt(anoStr, 10) || 2026;
+  const mes = parseInt(mesStr, 10) || 1;
+  const dia = parseInt(diaStr, 10) || 1;
+
+  const partesHora = (horaBase || '11:30:00')
+    .split(':')
+    .map((p) => parseInt(p, 10));
+  const h = Number.isFinite(partesHora[0]) ? partesHora[0] : 11;
+  const m = Number.isFinite(partesHora[1]) ? partesHora[1] : 30;
+  const s = Number.isFinite(partesHora[2]) ? partesHora[2] : 0;
+
+  const dt = new Date(Date.UTC(ano, mes - 1, dia, h, m, s));
+  dt.setUTCMinutes(dt.getUTCMinutes() + Math.round(minutosAdicionais));
+
+  const novoAno = dt.getUTCFullYear();
+  const novoMes = String(dt.getUTCMonth() + 1).padStart(2, '0');
+  const novoDia = String(dt.getUTCDate()).padStart(2, '0');
+  const novaHora = String(dt.getUTCHours()).padStart(2, '0');
+  const novoMin = String(dt.getUTCMinutes()).padStart(2, '0');
+  const novoSeg = String(dt.getUTCSeconds()).padStart(2, '0');
+
+  return {
+    data: `${novoAno}-${novoMes}-${novoDia}`,
+    hora: `${novaHora}:${novoMin}:${novoSeg}`,
+  };
+}
+
+/**
  * Tempos padronizados da planilha ABNT NBR 12244 (0001 até 0400 min em progressão logarítmica)
  */
 export const TEMPOS_PADRAO_BOMBEAMENTO_GEOESTE: number[] = [
   1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 14, 16, 18, 20, 25, 30, 35, 40, 45, 50,
   60, 70, 80, 90, 100, 130, 160, 190, 220, 250, 280, 310, 340, 370, 400,
 ];
+
+/**
+ * Gera a grade de tempos em minutos (progressão logarítmica inicial + intervalos horários/regulares)
+ * compatível com a duração selecionada (360, 720, 1440, 2160, 2880 ou 4320 min).
+ */
+export function gerarTemposBombeamentoParaDuracao(duracaoMinutos: number): number[] {
+  const alvo = Math.max(60, Math.round(duracaoMinutos));
+  const base = TEMPOS_PADRAO_BOMBEAMENTO_GEOESTE.filter((t) => t <= alvo);
+  const setTempos = new Set<number>(base);
+
+  if (alvo > 400) {
+    // De 420 até 1440 min (24h): leituras de 60 em 60 min
+    const limite1 = Math.min(alvo, 1440);
+    for (let t = 420; t <= limite1; t += 60) {
+      setTempos.add(t);
+    }
+  }
+  if (alvo > 1440) {
+    // De 1560 até 2880 min (48h): leituras de 120 em 120 min
+    const limite2 = Math.min(alvo, 2880);
+    for (let t = 1560; t <= limite2; t += 120) {
+      setTempos.add(t);
+    }
+  }
+  if (alvo > 2880) {
+    // De 3060 até 4320 min (72h): leituras de 180 em 180 min
+    for (let t = 3060; t <= alvo; t += 180) {
+      setTempos.add(t);
+    }
+  }
+
+  setTempos.add(alvo);
+  return Array.from(setTempos).sort((a, b) => a - b);
+}
+
+/**
+ * Ajusta a planilha de bombeamento para a duração selecionada preservando leituras já preenchidas.
+ */
+export function ajustarLeiturasBombeamentoParaDuracao(
+  leiturasAtuais: LeituraBombeamentoGeoeste[],
+  duracaoMinutos: number,
+  neReferencia = 22.4,
+  vazaoPadrao = '10,286'
+): LeituraBombeamentoGeoeste[] {
+  const base =
+    leiturasAtuais && leiturasAtuais.length > 0
+      ? [...leiturasAtuais].sort((a, b) => a.tMin - b.tMin)
+      : criarLeiturasBombeamentoPadraoGeoeste(neReferencia);
+
+  const horasRotulo = Math.round(duracaoMinutos / 60);
+  const mapaExistente = new Map<number, LeituraBombeamentoGeoeste>();
+  for (const item of base) {
+    if (item.tMin <= duracaoMinutos) {
+      mapaExistente.set(item.tMin, item);
+    }
+  }
+
+  const ultimaValida =
+    base.filter((l) => l.tMin <= duracaoMinutos).slice(-1)[0] ||
+    base[base.length - 1];
+  const ndFinal = ultimaValida?.ndM || (neReferencia + 20).toFixed(2).replace('.', ',');
+  const qFinal = ultimaValida?.vazaoM3h || vazaoPadrao || '10,286';
+
+  const temposAlvo = gerarTemposBombeamentoParaDuracao(duracaoMinutos);
+  // Inclui também tempos manuais que o usuário já tenha digitado dentro do limite
+  for (const item of base) {
+    if (item.tMin > 0 && item.tMin <= duracaoMinutos && !temposAlvo.includes(item.tMin)) {
+      temposAlvo.push(item.tMin);
+    }
+  }
+  temposAlvo.sort((a, b) => a - b);
+
+  return temposAlvo.map((t, idx) => {
+    const existente = mapaExistente.get(t);
+    if (existente) {
+      if (idx === temposAlvo.length - 1) {
+        return {
+          ...existente,
+          observacoes:
+            existente.observacoes && !existente.observacoes.includes('Estabilizado (')
+              ? existente.observacoes
+              : `Estabilizado (${horasRotulo}h)`,
+        };
+      }
+      return existente;
+    }
+
+    // Novo ponto adicionado na extensão de tempo
+    const anterior = base.filter((l) => l.tMin < t).slice(-1)[0];
+    return {
+      id: `bomb-t-${t}`,
+      tMin: t,
+      ndM: anterior?.ndM || ndFinal,
+      vazaoM3h: anterior?.vazaoM3h || qFinal,
+      areiaPpm: anterior?.areiaPpm || '0',
+      observacoes:
+        t === duracaoMinutos
+          ? `Estabilizado (${horasRotulo}h)`
+          : 'Estabilizado (extensão)',
+    };
+  });
+}
 
 /**
  * Tempos padronizados da planilha de Recuperação (0001 até 0035 min)
@@ -712,6 +863,90 @@ export function calcularParametrosStepDrawdownSEMA(
   };
 }
 
+/**
+ * Calcula domínio dinâmico [min, max] e marcas limpas para o eixo vertical de rebaixamento s (m),
+ * adequando-se aos valores mínimo e máximo reais dos dados com folga mínima nas extremidades.
+ */
+export function calcularDominioRebaixamentoGrafico(
+  valores: number[],
+  defaultMax = 45,
+  ancorarZero = false
+): { min: number; max: number; passo: number; ticks: number[] } {
+  const validos = valores.filter((v) => Number.isFinite(v) && v >= 0);
+  if (validos.length === 0) {
+    const ticksDefault: number[] = [];
+    for (let v = 0; v <= defaultMax; v += 5) ticksDefault.push(v);
+    return { min: 0, max: defaultMax, passo: 5, ticks: ticksDefault };
+  }
+
+  const rawMin = ancorarZero ? 0 : Math.min(...validos);
+  const rawMax = Math.max(...validos);
+  const amplitude = rawMax - rawMin;
+
+  // Folga mínima proporcional à amplitude (e pelo menos 0,5 m) para não colar pontos nos extremos
+  const folga =
+    amplitude > 0
+      ? Math.max(0.5, amplitude * 0.08)
+      : Math.max(1, Math.abs(rawMax) * 0.12);
+
+  const pisoDesejado = ancorarZero ? 0 : Math.max(0, rawMin - folga);
+  const tetoDesejado = rawMax + folga;
+  const spanBruto = Math.max(1, tetoDesejado - pisoDesejado);
+
+  const passosCandidatos = [0.5, 1, 2, 2.5, 5, 10, 15, 20, 25, 50, 100];
+  const passo =
+    passosCandidatos.find((p) => Math.ceil(spanBruto / p) <= 9) ||
+    passosCandidatos[passosCandidatos.length - 1];
+
+  const arred = (n: number) => Number(n.toFixed(2));
+
+  let min = ancorarZero
+    ? 0
+    : Math.max(0, arred(Math.floor(pisoDesejado / passo) * passo));
+  let max = arred(Math.ceil(tetoDesejado / passo) * passo);
+
+  // Garante folga visual mínima entre os extremos reais e as bordas do gráfico
+  if (!ancorarZero && min > 0 && rawMin - min < folga * 0.5) {
+    min = Math.max(0, arred(min - passo));
+  }
+  if (max - rawMax < folga * 0.5) {
+    max = arred(max + passo);
+  }
+  if (max <= min) {
+    max = arred(min + passo);
+  }
+
+  const ticks: number[] = [];
+  for (let v = min; v <= max + 1e-6; v += passo) {
+    ticks.push(arred(v));
+  }
+
+  return { min, max, passo, ticks };
+}
+
+/**
+ * Calcula o teto e as marcas logarítmicas do eixo horizontal de tempo t (min) / t' (min)
+ * conforme a duração real das leituras.
+ */
+export function calcularEscalaTempoLogGrafico(
+  tempos: number[],
+  pisoTMax = 400
+): { tMax: number; ticks: number[] } {
+  const validos = tempos.filter((t) => Number.isFinite(t) && t >= 1);
+  const maxData = validos.length > 0 ? Math.max(...validos, pisoTMax) : pisoTMax;
+
+  const gradeLog = [1, 2, 5, 10, 20, 50, 100, 200, 400, 600, 1000, 1500, 2000, 3000, 5000, 10000];
+  const tMax =
+    gradeLog.find((v) => v >= maxData) ?? Math.ceil(maxData * 1.1);
+
+  const ticks = gradeLog.filter((v) => v <= tMax);
+  if (ticks[ticks.length - 1] !== tMax) {
+    ticks.push(tMax);
+  }
+
+  return { tMax, ticks };
+}
+
 interface StepDrawdownSectionProps {
   dadosPoco: DadosPocoArtesiano;
   onChangeTesteSEMA: (novoTeste: DadosTesteVazaoSEMA) => void;
@@ -783,14 +1018,110 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
     [dadosPoco.nivelEstatico, testeAtual]
   );
 
+  const etapaLabelAtual = (testeAtual.etapaLabel || '24H').trim().toUpperCase();
+  const opcaoEtapaCorrespondente = OPCOES_ETAPA_DURACAO.find(
+    (o) => o.valor !== 'PERSONALIZADO' && o.valor === etapaLabelAtual
+  );
+  const [modoEtapaPersonalizada, setModoEtapaPersonalizada] = useState<boolean>(
+    () => Boolean(testeAtual.etapaLabel) && !opcaoEtapaCorrespondente
+  );
+
   const atualizarCampoTeste = <K extends keyof DadosTesteVazaoSEMA>(
     campo: K,
     valor: DadosTesteVazaoSEMA[K]
   ) => {
-    onChangeTesteSEMA({
+    const proximo: DadosTesteVazaoSEMA = {
       ...testeAtual,
       [campo]: valor,
+    };
+
+    // Se alterou horaInicioBombeamento ou dataInicioEnsaio com uma duração padrão selecionada, mantém término sincronizado
+    if (
+      (campo === 'horaInicioBombeamento' || campo === 'dataInicioEnsaio') &&
+      opcaoEtapaCorrespondente?.minutos
+    ) {
+      const fimBomb = calcularDataHoraComMinutos(
+        proximo.dataInicioEnsaio,
+        proximo.horaInicioBombeamento,
+        opcaoEtapaCorrespondente.minutos
+      );
+      const tempoRecMin =
+        parseInt(proximo.tempoRecuperacaoMinutos || '35', 10) || 35;
+      const fimRec = calcularDataHoraComMinutos(
+        fimBomb.data,
+        fimBomb.hora,
+        tempoRecMin
+      );
+      proximo.dataFinalBombeamento = fimBomb.data;
+      proximo.horaFinalBombeamento = fimBomb.hora;
+      proximo.dataInicioRecuperacao = fimBomb.data;
+      proximo.horaInicioRecuperacao = fimBomb.hora;
+      proximo.dataFinalRecuperacao = fimRec.data;
+      proximo.horaFinalRecuperacao = fimRec.hora;
+    }
+
+    onChangeTesteSEMA(proximo);
+  };
+
+  const handleSelecionarEtapaIntegrada = (valorSelecionado: string) => {
+    if (valorSelecionado === 'PERSONALIZADO') {
+      setModoEtapaPersonalizada(true);
+      return;
+    }
+
+    const opcao = OPCOES_ETAPA_DURACAO.find((o) => o.valor === valorSelecionado);
+    if (!opcao || !opcao.minutos || !opcao.horas) return;
+
+    setModoEtapaPersonalizada(false);
+
+    const dataIni = testeAtual.dataInicioEnsaio || '2026-03-13';
+    const horaIni = testeAtual.horaInicioBombeamento || '11:30:00';
+    const fimBomb = calcularDataHoraComMinutos(dataIni, horaIni, opcao.minutos);
+    const tempoRecMin =
+      parseInt(testeAtual.tempoRecuperacaoMinutos || '35', 10) || 35;
+    const fimRec = calcularDataHoraComMinutos(
+      fimBomb.data,
+      fimBomb.hora,
+      tempoRecMin
+    );
+
+    const novoTipoEnsaio: DadosTesteVazaoSEMA['tipoEnsaio'] =
+      testeAtual.tipoEnsaio === 'Escalonado (Step-Drawdown)'
+        ? 'Escalonado (Step-Drawdown)'
+        : testeAtual.tipoEnsaio === 'Contínuo 24h + Escalonado'
+        ? 'Contínuo 24h + Escalonado'
+        : (`Contínuo ${opcao.horas}h a Vazão Constante` as DadosTesteVazaoSEMA['tipoEnsaio']);
+
+    const novasLeituras = ajustarLeiturasBombeamentoParaDuracao(
+      testeAtual.leiturasBombeamento || [],
+      opcao.minutos,
+      neBaseNumero,
+      testeAtual.vazaoOutorgaRecomendadaM3h || dadosPoco.vazaoTeste || '10,286'
+    );
+
+    onChangeTesteSEMA({
+      ...testeAtual,
+      etapaLabel: opcao.valor,
+      tipoEnsaio: novoTipoEnsaio,
+      dataFinalBombeamento: fimBomb.data,
+      horaFinalBombeamento: fimBomb.hora,
+      dataInicioRecuperacao: fimBomb.data,
+      horaInicioRecuperacao: fimBomb.hora,
+      dataFinalRecuperacao: fimRec.data,
+      horaFinalRecuperacao: fimRec.hora,
+      leiturasBombeamento: novasLeituras,
     });
+  };
+
+  const handleReajustarGradeParaDuracaoAtual = () => {
+    const minAlvo = opcaoEtapaCorrespondente?.minutos || 1440;
+    const novasLeituras = ajustarLeiturasBombeamentoParaDuracao(
+      testeAtual.leiturasBombeamento || [],
+      minAlvo,
+      neBaseNumero,
+      testeAtual.vazaoOutorgaRecomendadaM3h || dadosPoco.vazaoTeste || '10,286'
+    );
+    atualizarCampoTeste('leiturasBombeamento', novasLeituras);
   };
 
   const handleAplicarSimulacao = (dados: {
@@ -801,10 +1132,36 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
     vazaoRecomendada: string;
     nivelRecuperacaoFinal: string;
   }) => {
+    const op = OPCOES_ETAPA_DURACAO.find(
+      (o) => o.valor !== 'PERSONALIZADO' && o.valor === dados.etapaLabel.toUpperCase()
+    );
+    const dataIni = testeAtual.dataInicioEnsaio || '2026-03-13';
+    const horaIni = testeAtual.horaInicioBombeamento || '11:30:00';
+    const minutosBomb = op?.minutos || 1440;
+    const fimBomb = calcularDataHoraComMinutos(dataIni, horaIni, minutosBomb);
+    const tempoRecMin =
+      parseInt(testeAtual.tempoRecuperacaoMinutos || '35', 10) || 35;
+    const fimRec = calcularDataHoraComMinutos(
+      fimBomb.data,
+      fimBomb.hora,
+      tempoRecMin
+    );
+
+    setModoEtapaPersonalizada(!op);
+
     onChangeTesteSEMA({
       ...testeAtual,
       ativo: true,
       etapaLabel: dados.etapaLabel,
+      tipoEnsaio: op?.horas
+        ? (`Contínuo ${op.horas}h a Vazão Constante` as DadosTesteVazaoSEMA['tipoEnsaio'])
+        : testeAtual.tipoEnsaio,
+      dataFinalBombeamento: fimBomb.data,
+      horaFinalBombeamento: fimBomb.hora,
+      dataInicioRecuperacao: fimBomb.data,
+      horaInicioRecuperacao: fimBomb.hora,
+      dataFinalRecuperacao: fimRec.data,
+      horaFinalRecuperacao: fimRec.hora,
       vazaoOutorgaRecomendadaM3h: dados.vazaoRecomendada,
       nivelRecuperacaoFinalM: dados.nivelRecuperacaoFinal,
       leiturasBombeamento: dados.leiturasBombeamento,
@@ -1011,6 +1368,31 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
       }));
   }, [resultado.etapasCalculadas]);
 
+  const escalaGraficoBombeamento = useMemo(() => {
+    const valoresS = dadosGraficoBombeamentoSemiLog.map((d) => d.s);
+    const valoresT = dadosGraficoBombeamentoSemiLog.map((d) => d.t);
+    return {
+      eixoY: calcularDominioRebaixamentoGrafico(valoresS, 45, false),
+      eixoX: calcularEscalaTempoLogGrafico(valoresT, 400),
+    };
+  }, [dadosGraficoBombeamentoSemiLog]);
+
+  const escalaGraficoRecuperacao = useMemo(() => {
+    const valoresS = dadosGraficoRecuperacaoSemiLog.map((d) => d.s);
+    const valoresT = dadosGraficoRecuperacaoSemiLog.map((d) => d.t);
+    return {
+      eixoY: calcularDominioRebaixamentoGrafico(valoresS, 42, false),
+      eixoX: calcularEscalaTempoLogGrafico(valoresT, 50),
+    };
+  }, [dadosGraficoRecuperacaoSemiLog]);
+
+  const dominioSInterpretacao = useMemo(() => {
+    const valoresS = dadosGraficoInterpretacao.flatMap((d) =>
+      [d.s, d.sCalc].filter((v): v is number => v !== null && Number.isFinite(v))
+    );
+    return calcularDominioRebaixamentoGrafico(valoresS, 45, true);
+  }, [dadosGraficoInterpretacao]);
+
   return (
     <div className="rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-4 sm:p-6 space-y-5">
       {/* Cabeçalho do Módulo Grupo Geoeste — Teste de Bombeamento */}
@@ -1109,86 +1491,144 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
       ) : (
         <div className="space-y-5">
           {/* Metadados do Cabeçalho do Teste de Bombeamento (Páginas 2, 3 e 5 do PDF) */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3 p-4 rounded-xl bg-[#F7F9FC] dark:bg-slate-950 border border-[#DDE3EC] dark:border-slate-800">
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
-                N.E. Base (m)
-              </label>
-              <div className="px-2.5 py-1.5 text-xs font-mono font-bold rounded bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-800 text-sky-600">
-                {dadosPoco.nivelEstatico || '12,50'}
+          <div className="p-4 rounded-xl bg-[#F7F9FC] dark:bg-slate-950 border border-[#DDE3EC] dark:border-slate-800 space-y-3">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6 gap-3">
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
+                  N.E. Base (m)
+                </label>
+                <div className="px-2.5 py-1.5 text-xs font-mono font-bold rounded bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-800 text-sky-600">
+                  {dadosPoco.nivelEstatico || '12,50'}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
+                  Crivo (m)
+                </label>
+                <div className="px-2.5 py-1.5 text-xs font-mono font-bold rounded bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-800">
+                  {dadosPoco.crivo || '84,00'}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
+                  Etapa / Duração
+                </label>
+                <select
+                  value={
+                    modoEtapaPersonalizada || !opcaoEtapaCorrespondente
+                      ? 'PERSONALIZADO'
+                      : opcaoEtapaCorrespondente.valor
+                  }
+                  onChange={(e) => handleSelecionarEtapaIntegrada(e.target.value)}
+                  className="w-full px-2.5 py-1.5 text-xs font-mono font-bold rounded border border-[#E8A020]/70 bg-white dark:bg-slate-900 focus:border-[#E8A020] focus:outline-none"
+                >
+                  {OPCOES_ETAPA_DURACAO.map((op) => (
+                    <option key={op.valor} value={op.valor}>
+                      {op.rotulo}
+                    </option>
+                  ))}
+                </select>
+                {(modoEtapaPersonalizada || !opcaoEtapaCorrespondente) && (
+                  <input
+                    type="text"
+                    value={testeAtual.etapaLabel || ''}
+                    onChange={(e) =>
+                      atualizarCampoTeste('etapaLabel', e.target.value)
+                    }
+                    placeholder="Ex: 10H ou ETAPA 1"
+                    className="mt-1.5 w-full px-2.5 py-1 text-xs font-mono rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
+                  />
+                )}
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
+                  Hora Início Bomb.
+                </label>
+                <input
+                  type="text"
+                  value={testeAtual.horaInicioBombeamento || '11:30:00'}
+                  onChange={(e) =>
+                    atualizarCampoTeste('horaInicioBombeamento', e.target.value)
+                  }
+                  placeholder="11:30:00"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
+                  Hora Início Recup.
+                </label>
+                <input
+                  type="text"
+                  value={testeAtual.horaInicioRecuperacao || '17:50:00'}
+                  onChange={(e) =>
+                    atualizarCampoTeste('horaInicioRecuperacao', e.target.value)
+                  }
+                  placeholder="17:50:00"
+                  className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
+                />
+              </div>
+
+              <div>
+                <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
+                  Responsável Técnico
+                </label>
+                <input
+                  type="text"
+                  value={testeAtual.responsavelTecnicoNome || ''}
+                  onChange={(e) =>
+                    atualizarCampoTeste(
+                      'responsavelTecnicoNome',
+                      e.target.value
+                    )
+                  }
+                  placeholder="JOSE ROBERTO RIBEIRO"
+                  className="w-full px-2.5 py-1.5 text-xs rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
+                />
               </div>
             </div>
 
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
-                Crivo (m)
-              </label>
-              <div className="px-2.5 py-1.5 text-xs font-mono font-bold rounded bg-white dark:bg-slate-900 border border-[#DDE3EC] dark:border-slate-800">
-                {dadosPoco.crivo || '84,00'}
+            {/* Resumo Dinâmico da Duração Integrada e Alerta Normativo */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-[#DDE3EC]/80 dark:border-slate-800 text-[11px]">
+              <div className="flex flex-wrap items-center gap-3 text-[#6B7A8D] dark:text-slate-400 font-mono">
+                <span>
+                  <strong className="text-[#1B2A3B] dark:text-slate-200">
+                    Ensaio:
+                  </strong>{' '}
+                  {testeAtual.tipoEnsaio}
+                </span>
+                {opcaoEtapaCorrespondente?.minutos && (
+                  <span>
+                    <strong className="text-[#1B2A3B] dark:text-slate-200">
+                      Duração:
+                    </strong>{' '}
+                    {opcaoEtapaCorrespondente.minutos} min ({opcaoEtapaCorrespondente.horas}h)
+                  </span>
+                )}
+                {testeAtual.dataFinalBombeamento && testeAtual.horaFinalBombeamento && (
+                  <span>
+                    <strong className="text-[#1B2A3B] dark:text-slate-200">
+                      Término Bomb.:
+                    </strong>{' '}
+                    {testeAtual.dataFinalBombeamento.split('-').reverse().join('/')}{' '}
+                    {testeAtual.horaFinalBombeamento}
+                  </span>
+                )}
               </div>
-            </div>
 
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
-                Etapa / Duração
-              </label>
-              <input
-                type="text"
-                value={testeAtual.etapaLabel || '48H'}
-                onChange={(e) =>
-                  atualizarCampoTeste('etapaLabel', e.target.value)
-                }
-                placeholder="Ex: 48H ou 24H"
-                className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
-                Hora Início Bomb.
-              </label>
-              <input
-                type="text"
-                value={testeAtual.horaInicioBombeamento || '11:30:00'}
-                onChange={(e) =>
-                  atualizarCampoTeste('horaInicioBombeamento', e.target.value)
-                }
-                placeholder="11:30:00"
-                className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
-                Hora Início Recup.
-              </label>
-              <input
-                type="text"
-                value={testeAtual.horaInicioRecuperacao || '17:50:00'}
-                onChange={(e) =>
-                  atualizarCampoTeste('horaInicioRecuperacao', e.target.value)
-                }
-                placeholder="17:50:00"
-                className="w-full px-2.5 py-1.5 text-xs font-mono rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
-              />
-            </div>
-
-            <div>
-              <label className="block text-[10px] font-bold uppercase text-[#6B7A8D] mb-1">
-                Responsável Técnico
-              </label>
-              <input
-                type="text"
-                value={testeAtual.responsavelTecnicoNome || ''}
-                onChange={(e) =>
-                  atualizarCampoTeste(
-                    'responsavelTecnicoNome',
-                    e.target.value
-                  )
-                }
-                placeholder="JOSE ROBERTO RIBEIRO"
-                className="w-full px-2.5 py-1.5 text-xs rounded border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900"
-              />
+              {opcaoEtapaCorrespondente?.horas === 12 &&
+                (resultado.vazaoEstabilizadaFinalM3h ??
+                  parseNumeroSEMA(dadosPoco.vazaoTeste) ??
+                  0) >= 5.0 && (
+                  <span className="px-2.5 py-1 rounded bg-amber-100 dark:bg-amber-950/50 border border-amber-300 dark:border-amber-800 text-amber-800 dark:text-amber-200 font-semibold flex items-center gap-1">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                    Vazão ≥ 5,0 m³/h exige ensaio de 24H (ABNT NBR 12.244)
+                  </span>
+                )}
             </div>
           </div>
 
@@ -1310,7 +1750,7 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
               {/* Planilha de Bombeamento (Coluna Esquerda - 7 cols em 2XL) */}
               <div className="2xl:col-span-7 space-y-3 min-w-0">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <span className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
                       Planilha de Teste de Bombeamento ({resultado.leiturasBombeamentoCalc.length} leituras)
                     </span>
@@ -1323,6 +1763,17 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                       <Upload className="w-3 h-3" />
                       <span>Upload CSV</span>
                     </button>
+                    {opcaoEtapaCorrespondente?.minutos && (
+                      <button
+                        type="button"
+                        onClick={handleReajustarGradeParaDuracaoAtual}
+                        className="px-2 py-0.5 text-[10.5px] font-semibold rounded border border-[#E8A020]/60 bg-amber-50/70 dark:bg-amber-950/30 hover:bg-[#E8A020] hover:text-[#1B2A3B] text-amber-800 dark:text-amber-300 flex items-center gap-1 transition-colors"
+                        title={`Ajustar/completar intervalos até ${opcaoEtapaCorrespondente.minutos} min (${opcaoEtapaCorrespondente.valor})`}
+                      >
+                        <Clock className="w-3 h-3" />
+                        <span>Ajustar Grade ({opcaoEtapaCorrespondente.valor})</span>
+                      </button>
+                    )}
                   </div>
                   <span className="text-[11px] text-[#6B7A8D]">
                     Dica: clique em <CopyCheck className="w-3.5 h-3.5 inline text-[#E8A020]" /> para repetir o nível estabilizado até o final
@@ -1330,7 +1781,7 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                 </div>
 
                 <div className="max-h-[480px] overflow-x-auto overflow-y-auto border border-[#DDE3EC] dark:border-slate-800 rounded-xl">
-                  <table className="w-full min-w-[540px] border-collapse text-xs">
+                  <table className="w-full min-w-[460px] border-collapse text-xs">
                     <thead className="sticky top-0 z-10 bg-[#1B2A3B] text-white text-[10.5px] uppercase">
                       <tr>
                         <th className="py-2 px-2 text-center">Hora</th>
@@ -1338,8 +1789,6 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                         <th className="py-2 px-2 text-right">N.D. (m)</th>
                         <th className="py-2 px-2 text-right">Q (m³/h)</th>
                         <th className="py-2 px-2 text-right">s med (m)</th>
-                        <th className="py-2 px-2 text-center">Areia</th>
-                        <th className="py-2 px-2 text-center w-16">Ações</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[#DDE3EC] dark:divide-slate-800 font-mono">
@@ -1350,7 +1799,7 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                         return (
                           <tr
                             key={bruta.id}
-                            className="hover:bg-slate-50 dark:hover:bg-slate-800/40"
+                            className="group hover:bg-slate-50 dark:hover:bg-slate-800/40"
                           >
                             <td className="py-1.5 px-2 text-center text-[11px] text-[#6B7A8D]">
                               {lCalc.horaFormatada}
@@ -1398,45 +1847,30 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                               />
                             </td>
                             <td className="py-1.5 px-2 text-right font-bold text-sky-700 dark:text-sky-400">
-                              {fmtNumeroSEMA(lCalc.sMed, 2)}
-                            </td>
-                            <td className="py-1.5 px-2 text-center">
-                              <input
-                                type="text"
-                                value={bruta.areiaPpm || ''}
-                                onChange={(e) =>
-                                  atualizarLeituraBombeamento(
-                                    bruta.id,
-                                    'areiaPpm',
-                                    e.target.value
-                                  )
-                                }
-                                placeholder="0"
-                                className="w-14 px-1.5 py-1 text-center rounded border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950"
-                              />
-                            </td>
-                            <td className="py-1.5 px-2 text-center">
-                              <div className="flex items-center justify-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    repetirEstabilizacaoAteOFinal(idx)
-                                  }
-                                  title="Repetir este N.D. e Vazão até o final (estabilização)"
-                                  className="p-1 rounded text-[#E8A020] hover:bg-amber-50 dark:hover:bg-slate-800"
-                                >
-                                  <CopyCheck className="w-3.5 h-3.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    removerLinhaBombeamento(bruta.id)
-                                  }
-                                  title="Remover leitura"
-                                  className="p-1 rounded text-red-500 hover:bg-red-50"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
+                              <div className="flex items-center justify-end gap-1.5">
+                                <span>{fmtNumeroSEMA(lCalc.sMed, 2)}</span>
+                                <div className="flex items-center gap-0.5 opacity-60 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      repetirEstabilizacaoAteOFinal(idx)
+                                    }
+                                    title="Repetir este N.D. e Vazão até o final (estabilização)"
+                                    className="p-0.5 rounded text-[#E8A020] hover:bg-amber-50 dark:hover:bg-slate-800"
+                                  >
+                                    <CopyCheck className="w-3.5 h-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      removerLinhaBombeamento(bruta.id)
+                                    }
+                                    title="Remover leitura"
+                                    className="p-0.5 rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </div>
                             </td>
                           </tr>
@@ -1486,8 +1920,8 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                           dataKey="t"
                           name="t (min)"
                           scale="log"
-                          domain={[1, 1000]}
-                          ticks={[1, 2, 5, 10, 20, 50, 100, 200, 400, 1000]}
+                          domain={[1, escalaGraficoBombeamento.eixoX.tMax]}
+                          ticks={escalaGraficoBombeamento.eixoX.ticks}
                           allowDataOverflow
                           tick={{ fontSize: 10, fill: '#0F172A' }}
                           label={{
@@ -1503,7 +1937,11 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                           type="number"
                           dataKey="s"
                           name="s (m)"
-                          domain={[0, 45]}
+                          domain={[
+                            escalaGraficoBombeamento.eixoY.min,
+                            escalaGraficoBombeamento.eixoY.max,
+                          ]}
+                          ticks={escalaGraficoBombeamento.eixoY.ticks}
                           tick={{ fontSize: 10, fill: '#0F172A' }}
                           label={{
                             value: 'Rebaixamento s (m)',
@@ -1707,8 +2145,8 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                           dataKey="t"
                           name="t' (min)"
                           scale="log"
-                          domain={[1, 50]}
-                          ticks={[1, 2, 5, 10, 20, 35, 50]}
+                          domain={[1, escalaGraficoRecuperacao.eixoX.tMax]}
+                          ticks={escalaGraficoRecuperacao.eixoX.ticks}
                           allowDataOverflow
                           tick={{ fontSize: 10, fill: '#0F172A' }}
                           label={{
@@ -1724,7 +2162,11 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                           type="number"
                           dataKey="s"
                           name="s' (m)"
-                          domain={[0, 42]}
+                          domain={[
+                            escalaGraficoRecuperacao.eixoY.min,
+                            escalaGraficoRecuperacao.eixoY.max,
+                          ]}
+                          ticks={escalaGraficoRecuperacao.eixoY.ticks}
                           tick={{ fontSize: 10, fill: '#0F172A' }}
                           label={{
                             value: "Rebaixamento Residual s' (m)",
@@ -1912,6 +2354,8 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                         />
                         <YAxis
                           unit=""
+                          domain={['auto', 'auto']}
+                          padding={{ top: 12, bottom: 12 }}
                           tick={{ fontSize: 10 }}
                           label={{
                             value: 's/Q (m/m³/h)',
@@ -1974,6 +2418,8 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
                           }}
                         />
                         <YAxis
+                          domain={[0, dominioSInterpretacao.max]}
+                          ticks={dominioSInterpretacao.ticks}
                           tick={{ fontSize: 10 }}
                           label={{
                             value: 's (m)',
@@ -2101,6 +2547,7 @@ export const StepDrawdownSection: React.FC<StepDrawdownSectionProps> = ({
         neAtual={dadosPoco.nivelEstatico || '22,40'}
         ndAtual={dadosPoco.nivelDinamico || '64,10'}
         vazaoAtual={testeAtual.vazaoOutorgaRecomendadaM3h || dadosPoco.vazaoTeste || '10,29'}
+        duracaoInicialLabel={testeAtual.etapaLabel || '24H'}
         onAplicarSimulacao={handleAplicarSimulacao}
       />
 

@@ -17,10 +17,8 @@ import {
   Cloud,
   HelpCircle,
 } from 'lucide-react';
-import {
-  exportarTemplatesJson,
-  importarTemplatesJson,
-} from '../services/indexedDbService';
+import { exportarTemplatesJson } from '../services/relatorioDefaults';
+import { importarTemplatesJsonParaSupabase } from '../services/supabaseService';
 
 interface TemplateManagerModalProps {
   isOpen: boolean;
@@ -58,6 +56,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   const [busca, setBusca] = useState<string>('');
   const [filtroCategoria, setFiltroCategoria] = useState<string>('todas');
   const [mostrarAjudaNuvem, setMostrarAjudaNuvem] = useState<boolean>(false);
+  const [confirmandoExclusaoId, setConfirmandoExclusaoId] = useState<string | null>(null);
   const inputArquivoRef = useRef<HTMLInputElement | null>(null);
 
   if (!isOpen) return null;
@@ -127,10 +126,16 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   };
 
   const confirmarExclusao = (tpl: TemplateServico) => {
-    if (confirm(`Deseja realmente excluir o template personalizado "${tpl.titulo}"?`)) {
-      onExcluirTemplate(tpl.id);
-      showToast('Template excluído com sucesso!');
+    if (confirmandoExclusaoId !== tpl.id) {
+      setConfirmandoExclusaoId(tpl.id);
+      window.setTimeout(() => {
+        setConfirmandoExclusaoId((atual) => (atual === tpl.id ? null : atual));
+      }, 4000);
+      return;
     }
+    setConfirmandoExclusaoId(null);
+    onExcluirTemplate(tpl.id);
+    showToast('Template excluído do Supabase com sucesso!');
   };
 
   const puxarTextoAtual = () => {
@@ -143,7 +148,7 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
   };
 
   const handleExportarJson = () => {
-    const jsonStr = exportarTemplatesJson();
+    const jsonStr = exportarTemplatesJson(templates);
     const blob = new Blob([jsonStr], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -158,14 +163,14 @@ export const TemplateManagerModal: React.FC<TemplateManagerModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
-    reader.onload = (event) => {
+    reader.onload = async (event) => {
       const conteudoStr = String(event.target?.result || '');
-      const res = importarTemplatesJson(conteudoStr);
+      const res = await importarTemplatesJsonParaSupabase(conteudoStr);
       if (res.sucesso) {
-        showToast(`${res.qtd} template(s) importado(s) com sucesso!`, 'success');
+        showToast(`${res.qtd} template(s) importado(s) no Supabase com sucesso!`, 'success');
         onRecarregarTemplates?.();
       } else {
-        showToast('Formato de arquivo JSON inválido para templates.', 'error');
+        showToast('Formato de arquivo JSON inválido ou erro ao salvar no Supabase.', 'error');
       }
     };
     reader.readAsText(file);
@@ -424,10 +429,19 @@ create policy "Acesso templates" on public.templates_memorial for all using (tru
                             <button
                               type="button"
                               onClick={() => confirmarExclusao(tpl)}
-                              className="p-1.5 rounded-lg text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30 transition-colors"
-                              title="Excluir este template"
+                              className={`p-1.5 rounded-lg transition-colors flex items-center gap-1 ${
+                                confirmandoExclusaoId === tpl.id
+                                  ? 'bg-rose-600 text-white px-2 text-[11px] font-bold'
+                                  : 'text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-950/30'
+                              }`}
+                              title={
+                                confirmandoExclusaoId === tpl.id
+                                  ? 'Clique novamente para confirmar a exclusão'
+                                  : 'Excluir este template'
+                              }
                             >
                               <Trash2 className="w-3.5 h-3.5" />
+                              {confirmandoExclusaoId === tpl.id && <span>Confirmar?</span>}
                             </button>
                           </>
                         )}

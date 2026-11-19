@@ -357,26 +357,67 @@ export function construirEquacoesLivroRelatorio(
     relatorio.dadosPoco?.testeVazaoSEMA
   );
 
-  const qHora = fmtNumeroSEMA(calc.vazaoEstabilizadaFinalM3h ?? 10.286, 3);
-  const qDia = fmtNumeroSEMA(
-    (calc.vazaoEstabilizadaFinalM3h ?? 10.286) * 24,
-    3
+  const neVal = calc.neInicial ?? 22.4;
+  const ndVal = calc.ndEstabilizadoFinalM ?? 64.1;
+  const qHoraNum = calc.vazaoEstabilizadaFinalM3h ?? 10.286;
+  const qDiaNum = qHoraNum * 24;
+  const sMaxNum = calc.rebaixamentoMaximoM ?? Math.max(0, ndVal - neVal);
+
+  const qHora = fmtNumeroSEMA(qHoraNum, 3);
+  const qHora2 = fmtNumeroSEMA(qHoraNum, 2);
+  const qDia = fmtNumeroSEMA(qDiaNum, 3);
+  const neStr = fmtNumeroSEMA(neVal, 2);
+  const ndStr = fmtNumeroSEMA(ndVal, 2);
+  const sMax = fmtNumeroSEMA(sMaxNum, 2);
+  const qPorS = fmtNumeroSEMA(calc.qPorSFinal ?? (sMaxNum > 0 ? qHoraNum / sMaxNum : 0), 4);
+  const sPorQ = fmtNumeroSEMA(calc.sPorQFinal ?? (qHoraNum > 0 ? sMaxNum / qHoraNum : 0), 4);
+  const recPct = fmtNumeroSEMA(calc.percentualRecuperacao ?? 0, 2);
+  const deltaSNum = calc.deltaSCicloM ?? 19.0;
+  const deltaS = fmtNumeroSEMA(deltaSNum, 2);
+  const prod0183Q = fmtNumeroSEMA(0.183 * qDiaNum, 3);
+  const transT = fmtNumeroSEMA(
+    calc.transmissividadeM2Dia ?? (deltaSNum > 0 ? (0.183 * qDiaNum) / deltaSNum : 0),
+    2
   );
-  const sMax = fmtNumeroSEMA(calc.rebaixamentoMaximoM ?? 41.7, 2);
-  const qPorS = fmtNumeroSEMA(calc.qPorSFinal ?? 0.2467, 4);
-  const sPorQ = fmtNumeroSEMA(calc.sPorQFinal ?? 4.0541, 4);
-  const recPct = fmtNumeroSEMA(calc.percentualRecuperacao ?? 73.14, 2);
-  const deltaS = fmtNumeroSEMA(calc.deltaSCicloM ?? 19.0, 2);
-  const transT = fmtNumeroSEMA(calc.transmissividadeM2Dia ?? 2.38, 2);
-  const coefB = fmtNumeroSEMA(calc.coeficienteB ?? 2.9909, 4);
-  const coefC = fmtNumeroSEMA(calc.coeficienteC ?? 0.10317, 5);
-  const eficPct = fmtNumeroSEMA(calc.eficienciaUltimaEtapaPct ?? 73.8, 1);
+
+  const coefBNum = calc.coeficienteB ?? 0;
+  const coefCNum = calc.coeficienteC ?? 0;
+  const coefB = fmtNumeroSEMA(coefBNum, 4);
+  const coefC = fmtNumeroSEMA(coefCNum, 5);
+
+  const ultimaEtapa =
+    calc.etapasCalculadas.length > 0
+      ? calc.etapasCalculadas[calc.etapasCalculadas.length - 1]
+      : null;
+  const perdaLamNum =
+    ultimaEtapa?.perdaLaminar ?? Number((coefBNum * qHoraNum).toFixed(2));
+  const perdaTurbNum =
+    ultimaEtapa?.perdaTurbulenta ?? Number((coefCNum * qHoraNum * qHoraNum).toFixed(2));
+  const sSomaEtapaNum = Number((perdaLamNum + perdaTurbNum).toFixed(2));
+  const perdaLamStr = fmtNumeroSEMA(perdaLamNum, 2);
+  const perdaTurbStr = fmtNumeroSEMA(perdaTurbNum, 2);
+  const sSomaEtapaStr = fmtNumeroSEMA(sSomaEtapaNum, 2);
+  const eficNum = calc.eficienciaUltimaEtapaPct ?? (sSomaEtapaNum > 0 ? (perdaLamNum / sSomaEtapaNum) * 100 : 0);
+  const eficPct = fmtNumeroSEMA(eficNum, 1);
+  const perdaTurbPct = fmtNumeroSEMA(Math.max(0, 100 - eficNum), 1);
+
+  const ultimaRec =
+    calc.leiturasRecuperacaoCalc.length > 0
+      ? calc.leiturasRecuperacaoCalc[calc.leiturasRecuperacaoCalc.length - 1]
+      : null;
+  const naRecVal = ultimaRec?.nd ?? neVal;
+  const tempoRecMin = ultimaRec?.tMin ?? (relatorio.dadosPoco?.testeVazaoSEMA?.tempoRecuperacaoMinutos || '35');
+  const sResidualNum = Math.max(0, naRecVal - neVal);
+  const sAbatidoNum = Math.max(0, sMaxNum - sResidualNum);
+  const naRecStr = fmtNumeroSEMA(naRecVal, 2);
+  const sResidualStr = fmtNumeroSEMA(sResidualNum, 2);
+  const sAbatidoStr = fmtNumeroSEMA(sAbatidoNum, 2);
 
   const eqCapacidadeEspecifica: EquacaoLivroSpec = {
     id: 'eq-capacidade-especifica',
     numeroEquacao: '(Eq. 1)',
     titulo:
-      'Capacidade Específica (q_s) e Rebaixamento Específico (s/Q) no Teste Contínuo 24h',
+      'Capacidade Específica (q_s) e Rebaixamento Específico (s/Q) no Teste de Bombeamento',
     tokens: [
       { kind: 'var', main: 'q', sub: 's' },
       { kind: 'op', main: '=' },
@@ -412,14 +453,14 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'op', main: '=' },
       { kind: 'result', main: `${sPorQ} m/(m³/h)` },
     ],
-    legendaVariaveis: `Onde: Q = ${qHora} m³/h (${qDia} m³/dia)  •  NE = 22,40 m  •  ND = 64,10 m  •  Rebaixamento estabilizado s = ND − NE = ${sMax} m.`,
+    legendaVariaveis: `Onde: Q = ${qHora} m³/h (${qDia} m³/dia)  •  NE = ${neStr} m  •  ND = ${ndStr} m  •  Rebaixamento estabilizado s = ND − NE = ${sMax} m.`,
   };
 
   const eqRecuperacaoReal: EquacaoLivroSpec = {
     id: 'eq-recuperacao-real',
     numeroEquacao: '(Eq. 2)',
     titulo:
-      "Percentual Real de Recuperação Hidrodinâmica Recalculada (aos 35 min após parada)",
+      `Percentual Real de Recuperação Hidrodinâmica Recalculada (aos ${tempoRecMin} min após parada)`,
     tokens: [
       { kind: 'var', main: 'R', sub: '(%)' },
       { kind: 'op', main: '=' },
@@ -435,7 +476,7 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'op', main: '=' },
       {
         kind: 'paren-frac',
-        numerator: `${sMax} − 11,20`,
+        numerator: `${sMax} − ${sResidualStr}`,
         denominator: sMax,
       },
       { kind: 'op', main: '×' },
@@ -443,16 +484,16 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'op', main: '=' },
       {
         kind: 'frac',
-        numerator: '30,50',
+        numerator: sAbatidoStr,
         denominator: sMax,
       },
       { kind: 'op', main: '×' },
       { kind: 'num', main: '100' },
       { kind: 'op', main: '=' },
-      { kind: 'result', main: `${recPct}% (73,1%)` },
+      { kind: 'result', main: `${recPct}%` },
     ],
     legendaVariaveis:
-      "Onde: N.A.(35 min) = 33,60 m  •  Rebaixamento residual s' = 33,60 − 22,40 = 11,20 m  •  Coluna recuperada (s − s') = 30,50 m.",
+      `Onde: N.A.(${tempoRecMin} min) = ${naRecStr} m  •  Rebaixamento residual s' = ${naRecStr} − ${neStr} = ${sResidualStr} m  •  Coluna recuperada (s − s') = ${sAbatidoStr} m.`,
   };
 
   const eqCooperJacob: EquacaoLivroSpec = {
@@ -479,13 +520,13 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'op', main: '=' },
       {
         kind: 'frac',
-        numerator: '45,176',
+        numerator: prod0183Q,
         denominator: deltaS,
       },
       { kind: 'op', main: '=' },
       { kind: 'result', main: `${transT} m²/dia` },
     ],
-    legendaVariaveis: `Onde: Q = ${qDia} m³/dia (vazão constante em 24h)  •  Δs = 38,50 − 19,50 = ${deltaS} m (variação do rebaixamento entre t = 10 min e t = 100 min).`,
+    legendaVariaveis: `Onde: Q = ${qDia} m³/dia  •  Δs = ${deltaS} m (variação do rebaixamento por ciclo logarítmico entre t = 10 min e t = 100 min).`,
   };
 
   const eqJacobRorabaugh: EquacaoLivroSpec = {
@@ -520,14 +561,14 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'op', main: '=' },
       { kind: 'result', main: `${coefB} + ${coefC} · Q` },
     ],
-    legendaVariaveis: `Onde: B = ${coefB} h/m² (perdas laminares no aquífero)  •  C = ${coefC} h²/m⁵ (perdas turbulentas no poço)  •  Para Q = 10,29 m³/h: s = 30,78 + 10,92 = 41,70 m.`,
+    legendaVariaveis: `Onde: B = ${coefB} h/m² (perdas laminares no aquífero)  •  C = ${coefC} h²/m⁵ (perdas turbulentas no poço)  •  Para Q = ${qHora2} m³/h: s = ${perdaLamStr} + ${perdaTurbStr} = ${sSomaEtapaStr} m.`,
   };
 
   const eqEficienciaHidraulica: EquacaoLivroSpec = {
     id: 'eq-eficiencia-hidraulica',
     numeroEquacao: '(Eq. 5)',
     titulo:
-      'Eficiência Hidráulica do Poço (η) na Vazão Recomendada de Operação (Q = 10,29 m³/h)',
+      `Eficiência Hidráulica do Poço na Vazão Recomendada de Operação (Q = ${qHora2} m³/h)`,
     tokens: [
       { kind: 'var', main: 'η' },
       { kind: 'op', main: '=' },
@@ -543,8 +584,8 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'op', main: '=' },
       {
         kind: 'paren-frac',
-        numerator: '30,78',
-        denominator: '30,78 + 10,92',
+        numerator: perdaLamStr,
+        denominator: `${perdaLamStr} + ${perdaTurbStr}`,
       },
       { kind: 'op', main: '×' },
       { kind: 'num', main: '100' },
@@ -552,7 +593,7 @@ export function construirEquacoesLivroRelatorio(
       { kind: 'result', main: `${eficPct}%` },
     ],
     legendaVariaveis:
-      'Onde: Perda laminar B·Q = 30,78 m (73,8%)  •  Perda turbulenta C·Q² = 10,92 m (26,2%)  •  Classificação: Poço Eficiente e Bem Desenvolvido.',
+      `Onde: Perda laminar B·Q = ${perdaLamStr} m (${eficPct}%)  •  Perda turbulenta C·Q² = ${perdaTurbStr} m (${perdaTurbPct}%)  •  Classificação: ${calc.classificacaoEficiencia.rotulo}.`,
   };
 
   return {

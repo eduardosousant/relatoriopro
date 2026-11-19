@@ -5,33 +5,26 @@ import {
   DadosCabecalho,
   DadosPocoArtesiano,
   CadastroPoco,
+  CadastroCliente,
   TemplateServico,
   SecaoNavegacao,
   MembroEquipe,
   ItemServicoConduzido,
   ItemMaterialAplicado,
   NarrativasOcorrencias,
+  DadosTesteVazaoSEMA,
 } from './types/relatorio';
 import {
-  listarRelatorios,
-  salvarRelatorio,
-  excluirRelatorio,
-  listarPocos,
-  salvarPoco,
-  excluirPoco,
-  criarPocoDemonstracaoLista,
-  criarRelatorioEmBranco,
-  criarRelatorioDemonstracao,
-  criarRelatorioHistoricoAnteriorPT01,
-  criarRelatorioInauguralPT01,
+  CABECALHO_INSTITUCIONAL_PADRAO,
+  TIPOS_SERVICO_PADRAO,
+  normalizarTipoServico,
   TEMPLATES_SERVICO,
-  obterTodosTemplates,
-  salvarTemplateCustomizado,
-  excluirTemplateCustomizado,
-  sincronizarTemplatesNuvem,
-  salvarConfigPadrao,
-  obterConfigPadrao,
-} from './services/indexedDbService';
+  criarRelatorioEmBranco,
+  gerarLogoGeoestePadrao,
+  gerarUuidV4,
+  relatorioTemDadosReais,
+  limparBancoLocalLegado,
+} from './services/relatorioDefaults';
 import {
   exportarRelatorioPDF,
   exportarPDFTesteBombeamentoGeoeste,
@@ -43,11 +36,24 @@ import {
   excluirRelatorioSupabase,
   listarPocosSupabase,
   salvarPocoSupabase,
+  excluirPocoSupabase,
+  listarClientesSupabase,
+  salvarClienteSupabase,
+  excluirClienteSupabase,
+  sincronizarClientesComPocosSupabase,
+  carregarTodosTemplatesSupabase,
+  salvarTemplateSupabase,
+  excluirTemplateSupabase,
+  zerarDadosOperacionaisSupabase,
+  verificarTabelasSupabase,
+  SQL_COMPLETO_TABELAS_SUPABASE,
+  StatusTabelaSupabase,
 } from './services/supabaseService';
 import { useAuth } from './services/useAuth';
 import { LoginScreen } from './components/LoginScreen';
 import { ImageCropModal, ArquivoParaCorte } from './components/ImageCropModal';
 import { A4Preview } from './components/A4Preview';
+import { ClientesManager } from './components/ClientesManager';
 import { PocosManager } from './components/PocosManager';
 import { StepDrawdownSection } from './components/StepDrawdownSection';
 import { TemplateManagerModal } from './components/TemplateManagerModal';
@@ -56,7 +62,26 @@ import {
   ImportarOSCampoModal,
   DadosExtraidosOSCampo,
 } from './components/ImportarOSCampoModal';
+import {
+  ModalLancamentoRapidoHistorico,
+  LinhaLancamentoHistoricoOS,
+  gerarDadosTesteSimuladoParaHistorico,
+} from './components/ModalLancamentoRapidoHistorico';
+import { ConversorLotePDFSection } from './components/ConversorLotePDFSection';
 import { PocoLocationMap } from './components/PocoLocationMap';
+import { DetectorAquiferoCard } from './components/DetectorAquiferoCard';
+import { DimensionamentoBombaSection } from './components/DimensionamentoBombaSection';
+import { ModalAuditoriaHidrogeologica } from './components/ModalAuditoriaHidrogeologica';
+import {
+  executarAuditoriaDeterministicaRelatorio,
+  montarPayloadParecerHidrogeologico,
+  ResultadoAuditoriaRelatorio,
+} from './utils/auditoriaRelatorio';
+import {
+  obterPocosDoCliente,
+  pertenceAoCliente,
+  normalizarTextoCliente,
+} from './utils/clienteMatch';
 import {
   Building2,
   Droplets,
@@ -64,7 +89,6 @@ import {
   Wrench,
   Package,
   CheckSquare,
-  Camera,
   AlertTriangle,
   FileText,
   Plus,
@@ -96,6 +120,10 @@ import {
   FolderCog,
   BookmarkPlus,
   BookmarkCheck,
+  ShieldCheck,
+  ShieldAlert,
+  Users,
+  FileSpreadsheet,
 } from 'lucide-react';
 
 const SECOES_SIDEBAR: {
@@ -103,13 +131,15 @@ const SECOES_SIDEBAR: {
   label: string;
   icon: React.FC<{ className?: string }>;
 }[] = [
+  { id: 'cadastro_clientes', label: 'Cadastro de Clientes', icon: Users },
   { id: 'cadastro_pocos', label: 'Cadastro de Poços', icon: Database },
+  { id: 'conversor_lote', label: 'Conversor PDF / Lote', icon: FileSpreadsheet },
   { id: 'identificacao', label: 'Identificação', icon: Building2 },
   { id: 'poco', label: 'Dados do Poço', icon: Droplets },
   { id: 'servicos', label: 'Serviços Executados', icon: Wrench },
   { id: 'materiais', label: 'Materiais Aplicados', icon: Package },
   { id: 'checklist', label: 'Checklist de Qualidade', icon: CheckSquare },
-  { id: 'fotos', label: 'Registro Fotográfico', icon: Camera },
+  { id: 'fotos', label: 'Registro Fotográfico', icon: ImageIcon },
   { id: 'ocorrencias', label: 'Ocorrências de Campo', icon: AlertTriangle },
   { id: 'assinaturas', label: 'Termo & Assinaturas', icon: PenTool },
   { id: 'preview', label: 'Laudo A4 / PDF', icon: FileText },
@@ -136,19 +166,35 @@ export default function App() {
     }
   }, [modoEscuro]);
 
+  const [clientesCadastrados, setClientesCadastrados] = useState<
+    CadastroCliente[]
+  >([]);
   const [pocosCadastrados, setPocosCadastrados] = useState<CadastroPoco[]>([]);
+  const [pocoProntuarioSelecionadoUuid, setPocoProntuarioSelecionadoUuid] =
+    useState<string>('');
   const [relatoriosSalvos, setRelatoriosSalvos] = useState<RelatorioTecnico[]>(
     []
   );
-  const [relatorioAtivo, setRelatorioAtivo] = useState<RelatorioTecnico>(() =>
-    criarRelatorioDemonstracao()
+  const [logoEmpresaSessao, setLogoEmpresaSessao] = useState<string>(() =>
+    gerarLogoGeoestePadrao()
   );
-  const [secaoAtiva, setSecaoAtiva] = useState<SecaoNavegacao>('preview');
+  const [relatorioAtivo, setRelatorioAtivo] = useState<RelatorioTecnico>(() =>
+    criarRelatorioEmBranco()
+  );
+  const [secaoAtiva, setSecaoAtiva] = useState<SecaoNavegacao>('identificacao');
   const [modalHistoricoAberto, setModalHistoricoAberto] =
     useState<boolean>(false);
-  const [abaHistorico, setAbaHistorico] = useState<'local' | 'supabase'>('supabase');
-  const [relatoriosSupabase, setRelatoriosSupabase] = useState<RelatorioTecnico[]>([]);
   const [carregandoSupabase, setCarregandoSupabase] = useState<boolean>(false);
+  const [modalResetAberto, setModalResetAberto] = useState<boolean>(false);
+  const [confirmacaoTextoReset, setConfirmacaoTextoReset] = useState<string>('');
+  const [executandoReset, setExecutandoReset] = useState<boolean>(false);
+  const [erroReset, setErroReset] = useState<string | null>(null);
+  const [statusTabelasSupabase, setStatusTabelasSupabase] = useState<
+    StatusTabelaSupabase[]
+  >([]);
+  const [verificandoTabelas, setVerificandoTabelas] = useState<boolean>(false);
+  const [mostrarSqlSupabase, setMostrarSqlSupabase] = useState<boolean>(false);
+  const [sqlCopiado, setSqlCopiado] = useState<boolean>(false);
   const [buscaHistorico, setBuscaHistorico] = useState<string>('');
   const [filtroStatusHistorico, setFiltroStatusHistorico] = useState<
     'todos' | 'Concluído' | 'Em andamento' | 'Pendente'
@@ -159,13 +205,29 @@ export default function App() {
     useState<boolean>(false);
   const [novoItemChecklistTexto, setNovoItemChecklistTexto] =
     useState<string>('');
-  const [listaTemplates, setListaTemplates] = useState<TemplateServico[]>(() =>
-    obterTodosTemplates()
+  const [listaTemplates, setListaTemplates] = useState<TemplateServico[]>(
+    () => TEMPLATES_SERVICO
   );
   const [modalGerenciarTemplatesAberta, setModalGerenciarTemplatesAberta] =
     useState<boolean>(false);
   const [modalImportarOSAberta, setModalImportarOSAberta] =
     useState<boolean>(false);
+  const [modalLancamentoRapidoAberta, setModalLancamentoRapidoAberta] =
+    useState<boolean>(false);
+  const [filtroLancamentoRapido, setFiltroLancamentoRapido] = useState<{
+    clienteUuid?: string;
+    pocoUuid?: string;
+  }>({});
+  const [modalAuditoriaAberta, setModalAuditoriaAberta] =
+    useState<boolean>(false);
+  const [resultadoAuditoria, setResultadoAuditoria] =
+    useState<ResultadoAuditoriaRelatorio | null>(null);
+  const [carregandoAuditoriaIA, setCarregandoAuditoriaIA] =
+    useState<boolean>(false);
+  const [modoBloqueioExportacao, setModoBloqueioExportacao] =
+    useState<boolean>(false);
+  const [relatorioPendenteExportacao, setRelatorioPendenteExportacao] =
+    useState<RelatorioTecnico | null>(null);
 
   const [erroSistema, setErroSistema] = useState<string | null>(null);
   const [toast, setToast] = useState<{
@@ -178,7 +240,6 @@ export default function App() {
 
   const [filaParaCorte, setFilaParaCorte] = useState<ArquivoParaCorte[]>([]);
   const inputFotosRef = useRef<HTMLInputElement | null>(null);
-  const inputCameraRef = useRef<HTMLInputElement | null>(null);
   const inputLogoRef = useRef<HTMLInputElement | null>(null);
   const autoSaveTimeoutRef = useRef<number | null>(null);
   const inicializadoRef = useRef<boolean>(false);
@@ -193,86 +254,74 @@ export default function App() {
     []
   );
 
-  // Inicialização do Banco de Dados (Prioridade Supabase + Cache Local)
+  // Inicialização Exclusiva via Supabase (Nuvem) — sem banco local (IndexedDB) e sem semear dados de demonstração
   useEffect(() => {
     let ativo = true;
     async function inicializarBanco() {
       try {
-        let listaPocos: CadastroPoco[] = [];
-        let listaRel: RelatorioTecnico[] = [];
+        // Remove qualquer resquício do banco IndexedDB legado no navegador
+        limparBancoLocalLegado().catch(() => {});
 
-        // 1. Tenta carregar primeiro diretamente da Nuvem Supabase
-        if (isSupabaseConfigured) {
-          try {
-            const [pocosNuvem, relatoriosNuvem] = await Promise.all([
-              listarPocosSupabase(),
-              listarRelatoriosSupabase(),
-            ]);
-
-            if (pocosNuvem && pocosNuvem.length > 0) {
-              listaPocos = pocosNuvem;
-            }
-            if (relatoriosNuvem && relatoriosNuvem.length > 0) {
-              listaRel = relatoriosNuvem;
-            }
-          } catch (e) {
-            console.warn('Falha ao carregar dados iniciais do Supabase:', e);
-          }
-        }
-
-        // 2. Se o Supabase estiver vazio ou offline, carrega do IndexedDB ou cria demonstração
-        if (listaPocos.length === 0) {
-          const demosPocos = criarPocoDemonstracaoLista();
-          for (const p of demosPocos) {
-            await salvarPoco(p);
-          }
-          listaPocos = await listarPocos();
-        }
-
-        if (listaRel.length === 0) {
-          const demoCorrigido = criarRelatorioDemonstracao();
-          await salvarRelatorio(demoCorrigido);
-          if (demoCorrigido.cabecalho.logoBase64) {
-            await salvarConfigPadrao(
-              'logoPadrao',
-              demoCorrigido.cabecalho.logoBase64
+        if (!isSupabaseConfigured) {
+          if (ativo) {
+            setErroSistema(
+              'Conexão com o Supabase não configurada. Verifique as credenciais em supabaseClient.ts.'
             );
+            inicializadoRef.current = true;
           }
-          listaRel = await listarRelatorios();
+          return;
         }
+
+        const [clientesNuvem, pocosNuvem, relatoriosNuvem, templatesNuvem] =
+          await Promise.all([
+            listarClientesSupabase(),
+            listarPocosSupabase(),
+            listarRelatoriosSupabase(),
+            carregarTodosTemplatesSupabase(),
+          ]);
+
+        // Vincula poços aos respectivos clientes existentes no Supabase sem criar registros demo
+        const { clientes, pocosAtualizados } =
+          pocosNuvem.length > 0
+            ? await sincronizarClientesComPocosSupabase(
+                pocosNuvem,
+                clientesNuvem
+              )
+            : { clientes: clientesNuvem, pocosAtualizados: [] };
 
         if (!ativo) return;
 
-        setPocosCadastrados(listaPocos);
-        setRelatoriosSalvos(listaRel);
-        setRelatoriosSupabase(listaRel);
-
-        const relPrincipal =
-          listaRel.find(
-            (r) => r.uuid === 'laudo-hidrogeo-os-2026-0842-corrigido'
-          ) ||
-          listaRel[0];
-
-        if (relPrincipal) {
-          setRelatorioAtivo(relPrincipal);
+        setClientesCadastrados(clientes);
+        setPocosCadastrados(pocosAtualizados);
+        setRelatoriosSalvos(relatoriosNuvem);
+        if (templatesNuvem && templatesNuvem.length > 0) {
+          setListaTemplates(templatesNuvem);
         }
 
-        setHorarioUltimoSave(new Date().toLocaleTimeString('pt-BR'));
-        inicializadoRef.current = true;
-
-        // Sincroniza templates em nuvem (Supabase) em segundo plano
-        sincronizarTemplatesNuvem().then((tpls) => {
-          if (ativo && tpls && tpls.length > 0) {
-            setListaTemplates(tpls);
+        if (relatoriosNuvem.length > 0) {
+          setRelatorioAtivo(relatoriosNuvem[0]);
+          if (relatoriosNuvem[0].cabecalho.logoBase64) {
+            setLogoEmpresaSessao(relatoriosNuvem[0].cabecalho.logoBase64);
           }
-        });
+        } else {
+          setRelatorioAtivo(
+            criarRelatorioEmBranco({
+              ...CABECALHO_INSTITUCIONAL_PADRAO,
+              logoBase64: gerarLogoGeoestePadrao(),
+            })
+          );
+          setSecaoAtiva('identificacao');
+        }
+
+        inicializadoRef.current = true;
       } catch (err) {
         if (!ativo) return;
         setErroSistema(
           err instanceof Error
             ? err.message
-            : 'Erro ao inicializar o banco de dados.'
+            : 'Erro ao carregar dados do Supabase.'
         );
+        inicializadoRef.current = true;
       }
     }
 
@@ -282,9 +331,12 @@ export default function App() {
     };
   }, []);
 
-  // Auto-save contínuo em IndexedDB (BLOB + Base64)
+  // Auto-save contínuo direto no Supabase (somente quando o relatório possuir dados reais preenchidos)
   useEffect(() => {
     if (!inicializadoRef.current) return;
+    if (!isSupabaseConfigured) return;
+    if (!relatorioTemDadosReais(relatorioAtivo)) return;
+
     if (autoSaveTimeoutRef.current) {
       window.clearTimeout(autoSaveTimeoutRef.current);
     }
@@ -292,20 +344,26 @@ export default function App() {
     setSalvandoAuto(true);
     autoSaveTimeoutRef.current = window.setTimeout(async () => {
       try {
-        const salvo = await salvarRelatorio(relatorioAtivo);
-        setRelatoriosSalvos((prev) => {
-          const semAtual = prev.filter((r) => r.uuid !== salvo.uuid);
-          return [salvo, ...semAtual].sort(
-            (a, b) => b.atualizadoEm - a.atualizadoEm
-          );
-        });
-        setHorarioUltimoSave(new Date().toLocaleTimeString('pt-BR'));
+        const atualizado: RelatorioTecnico = {
+          ...relatorioAtivo,
+          atualizadoEm: Date.now(),
+        };
+        const res = await salvarRelatorioSupabase(atualizado);
+        if (res.sucesso) {
+          setRelatoriosSalvos((prev) => {
+            const semAtual = prev.filter((r) => r.uuid !== atualizado.uuid);
+            return [atualizado, ...semAtual].sort(
+              (a, b) => b.atualizadoEm - a.atualizadoEm
+            );
+          });
+          setHorarioUltimoSave(new Date().toLocaleTimeString('pt-BR'));
+        }
       } catch {
         // Silencioso no auto-save
       } finally {
         setSalvandoAuto(false);
       }
-    }, 650);
+    }, 1200);
 
     return () => {
       if (autoSaveTimeoutRef.current) {
@@ -329,7 +387,7 @@ export default function App() {
     (preenchidosCount / camposObrigatoriosProgresso.length) * 100
   );
 
-  // Persistência manual explícita (botão "Salvar no Banco")
+  // Persistência manual explícita direto no Supabase
   const handlePersistirManual = async () => {
     if (!relatorioAtivo.cabecalho.contratoOS.trim()) {
       showToast(
@@ -341,67 +399,355 @@ export default function App() {
     }
 
     try {
-      const salvo = await salvarRelatorio(relatorioAtivo);
-      setRelatoriosSalvos((prev) => {
-        const semAtual = prev.filter((r) => r.uuid !== salvo.uuid);
-        return [salvo, ...semAtual].sort(
-          (a, b) => b.atualizadoEm - a.atualizadoEm
-        );
-      });
-      setHorarioUltimoSave(new Date().toLocaleTimeString('pt-BR'));
-
-      if (isSupabaseConfigured) {
-        const resNuvem = await salvarRelatorioSupabase(salvo);
-        if (resNuvem.sucesso) {
-          showToast(
-            'Relatório salvo no Banco Local e sincronizado no Supabase (Nuvem)!',
-            'success'
-          );
-          const listaNuvem = await listarRelatoriosSupabase();
-          if (listaNuvem && listaNuvem.length > 0) {
-            setRelatoriosSupabase(listaNuvem);
-          }
-        } else {
-          showToast(
-            `Salvo localmente. Erro no Supabase: ${resNuvem.erro || 'Falha de comunicação'}`,
-            'error'
-          );
-        }
+      const atualizado: RelatorioTecnico = {
+        ...relatorioAtivo,
+        atualizadoEm: Date.now(),
+      };
+      const resNuvem = await salvarRelatorioSupabase(atualizado);
+      if (resNuvem.sucesso) {
+        const listaNuvem = await listarRelatoriosSupabase();
+        setRelatoriosSalvos(listaNuvem);
+        setHorarioUltimoSave(new Date().toLocaleTimeString('pt-BR'));
+        showToast('Relatório salvo no Supabase com sucesso!', 'success');
       } else {
-        showToast('Relatório salvo com sucesso no banco de dados local!', 'success');
+        showToast(
+          `Erro ao salvar no Supabase: ${resNuvem.erro || 'Falha de comunicação'}`,
+          'error'
+        );
       }
     } catch {
-      showToast('Erro ao salvar relatório no banco de dados.', 'error');
+      showToast('Erro ao salvar relatório no Supabase.', 'error');
     }
   };
 
-  // Operações do Cadastro de Poços
-  const handleSalvarPocoNoBanco = async (poco: CadastroPoco) => {
+  // Operações do Cadastro de Clientes (Exclusivamente Supabase)
+  const handleSalvarClienteNoBanco = async (cliente: CadastroCliente) => {
     try {
-      const salvo = await salvarPoco(poco);
-      const listaAtualizada = await listarPocos();
-      setPocosCadastrados(listaAtualizada);
-      if (isSupabaseConfigured) {
-        await salvarPocoSupabase(poco);
+      const registro: CadastroCliente = {
+        ...cliente,
+        uuid: cliente.uuid || gerarUuidV4(),
+        atualizadoEm: Date.now(),
+      };
+      const ok = await salvarClienteSupabase(registro);
+      if (!ok) {
+        showToast('Erro ao salvar cadastro do cliente no Supabase.', 'error');
+        return;
       }
+
+      // Atualiza nome/CNPJ nos poços já vinculados a este cliente
+      const pocosAtualizar = pocosCadastrados.filter(
+        (p) => p.clienteUuid === registro.uuid
+      );
+      if (pocosAtualizar.length > 0) {
+        for (const p of pocosAtualizar) {
+          if (
+            p.cliente !== registro.razaoSocial ||
+            (registro.cnpjCpf && p.clienteCNPJ !== registro.cnpjCpf)
+          ) {
+            await salvarPocoSupabase({
+              ...p,
+              cliente: registro.razaoSocial,
+              clienteCNPJ: registro.cnpjCpf || p.clienteCNPJ,
+              atualizadoEm: Date.now(),
+            });
+          }
+        }
+      }
+
+      const [clientesNuvem, pocosNuvem] = await Promise.all([
+        listarClientesSupabase(),
+        listarPocosSupabase(),
+      ]);
+      const sincronizado = await sincronizarClientesComPocosSupabase(
+        pocosNuvem,
+        clientesNuvem
+      );
+      setClientesCadastrados(sincronizado.clientes);
+      setPocosCadastrados(sincronizado.pocosAtualizados);
+
       showToast(
-        `Poço ${salvo.tag} (${salvo.nomeIdentificacao}) salvo no cadastro!`,
+        `Cliente "${registro.razaoSocial}" salvo no Supabase com sucesso!`,
         'success'
       );
     } catch {
-      showToast('Erro ao salvar cadastro do poço.', 'error');
+      showToast('Erro ao salvar cadastro do cliente no Supabase.', 'error');
+    }
+  };
+
+  const handleExcluirClienteDoBanco = async (uuid: string) => {
+    try {
+      const ok = await excluirClienteSupabase(uuid);
+      if (!ok) {
+        showToast('Erro ao excluir cliente no Supabase.', 'error');
+        return;
+      }
+      const listaClientes = await listarClientesSupabase();
+      setClientesCadastrados(listaClientes);
+      showToast('Cliente removido do Supabase.', 'success');
+    } catch {
+      showToast('Erro ao excluir cliente.', 'error');
+    }
+  };
+
+  // Operações do Cadastro de Poços (Exclusivamente Supabase)
+  const handleSalvarPocoNoBanco = async (poco: CadastroPoco) => {
+    try {
+      const registro: CadastroPoco = {
+        ...poco,
+        uuid: poco.uuid || gerarUuidV4(),
+        atualizadoEm: Date.now(),
+      };
+      const ok = await salvarPocoSupabase(registro);
+      if (!ok) {
+        showToast('Erro ao salvar cadastro do poço no Supabase.', 'error');
+        return;
+      }
+      const [listaAtualizada, listaClientes] = await Promise.all([
+        listarPocosSupabase(),
+        listarClientesSupabase(),
+      ]);
+      const sincronizado = await sincronizarClientesComPocosSupabase(
+        listaAtualizada,
+        listaClientes
+      );
+      setClientesCadastrados(sincronizado.clientes);
+      setPocosCadastrados(sincronizado.pocosAtualizados);
+      showToast(
+        `Poço ${registro.tag} (${registro.nomeIdentificacao}) salvo no Supabase!`,
+        'success'
+      );
+    } catch {
+      showToast('Erro ao salvar cadastro do poço no Supabase.', 'error');
     }
   };
 
   const handleExcluirPocoDoBanco = async (uuid: string) => {
     try {
-      await excluirPoco(uuid);
-      const listaAtualizada = await listarPocos();
-      setPocosCadastrados(listaAtualizada);
-      showToast('Poço removido do cadastro.', 'success');
+      const ok = await excluirPocoSupabase(uuid);
+      if (!ok) {
+        showToast('Erro ao excluir poço no Supabase.', 'error');
+        return;
+      }
+      const [listaAtualizada, listaClientes] = await Promise.all([
+        listarPocosSupabase(),
+        listarClientesSupabase(),
+      ]);
+      const sincronizado = await sincronizarClientesComPocosSupabase(
+        listaAtualizada,
+        listaClientes
+      );
+      setPocosCadastrados(sincronizado.pocosAtualizados);
+      showToast('Poço removido do Supabase.', 'success');
     } catch {
       showToast('Erro ao excluir poço.', 'error');
     }
+  };
+
+  const handleMesclarPocosNoBanco = async (
+    pocoOrigemUuid: string,
+    pocoDestinoUuid: string
+  ) => {
+    if (!pocoOrigemUuid || !pocoDestinoUuid || pocoOrigemUuid === pocoDestinoUuid) {
+      showToast('Selecione dois poços diferentes para juntar os cadastros.', 'error');
+      return;
+    }
+
+    const origem = pocosCadastrados.find((p) => p.uuid === pocoOrigemUuid);
+    const destino = pocosCadastrados.find((p) => p.uuid === pocoDestinoUuid);
+    if (!origem || !destino) {
+      showToast('Poço de origem ou destino não encontrado.', 'error');
+      return;
+    }
+
+    try {
+      const ehDoOrigem = (rel: RelatorioTecnico) => {
+        if (rel.pocoUuid && rel.pocoUuid === origem.uuid) return true;
+        const mesmaTag =
+          normalizarTextoCliente(rel.dadosPoco?.pocoId || '') ===
+          normalizarTextoCliente(origem.tag);
+        const mesmoCliente =
+          normalizarTextoCliente(rel.cabecalho.cliente) ===
+          normalizarTextoCliente(origem.cliente);
+        return !rel.pocoUuid && mesmaTag && mesmoCliente;
+      };
+
+      const relatoriosParaMover = relatoriosSalvos.filter(ehDoOrigem);
+      let movidos = 0;
+
+      for (const rel of relatoriosParaMover) {
+        const atualizado: RelatorioTecnico = {
+          ...rel,
+          clienteUuid: destino.clienteUuid || rel.clienteUuid,
+          pocoUuid: destino.uuid,
+          cabecalho: {
+            ...rel.cabecalho,
+            cliente: destino.cliente || rel.cabecalho.cliente,
+            clienteCNPJ: destino.clienteCNPJ || rel.cabecalho.clienteCNPJ,
+          },
+          dadosPoco: {
+            ...rel.dadosPoco,
+            pocoId: destino.tag,
+          },
+          atualizadoEm: Date.now(),
+        };
+        await salvarRelatorioSupabase(atualizado);
+        movidos++;
+      }
+
+      const preencherSeVazio = (atual?: string, fallback?: string) => {
+        const a = (atual || '').trim();
+        if (!a || a.includes('[DADO A PREENCHER')) {
+          return (fallback || '').trim() || atual || '';
+        }
+        return atual || '';
+      };
+
+      const obsCombinada =
+        destino.observacoesTecnicas &&
+        origem.observacoesTecnicas &&
+        destino.observacoesTecnicas !== origem.observacoesTecnicas
+          ? `${destino.observacoesTecnicas}\n[Mesclado de ${origem.tag}]: ${origem.observacoesTecnicas}`
+          : destino.observacoesTecnicas || origem.observacoesTecnicas || '';
+
+      const destinoAtualizado: CadastroPoco = {
+        ...destino,
+        nomeIdentificacao: preencherSeVazio(
+          destino.nomeIdentificacao,
+          origem.nomeIdentificacao
+        ),
+        enderecoLocal: preencherSeVazio(
+          destino.enderecoLocal,
+          origem.enderecoLocal
+        ),
+        cidadeUF: preencherSeVazio(destino.cidadeUF, origem.cidadeUF),
+        coordenadasUTM: preencherSeVazio(
+          destino.coordenadasUTM,
+          origem.coordenadasUTM
+        ),
+        contatoLocal: preencherSeVazio(destino.contatoLocal, origem.contatoLocal),
+        telefoneContato: preencherSeVazio(
+          destino.telefoneContato,
+          origem.telefoneContato
+        ),
+        profundidadeTotal: preencherSeVazio(
+          destino.profundidadeTotal,
+          origem.profundidadeTotal
+        ),
+        diametroRevestimento: preencherSeVazio(
+          destino.diametroRevestimento,
+          origem.diametroRevestimento
+        ),
+        dataPerfuracao: destino.dataPerfuracao || origem.dataPerfuracao,
+        numeroOutorga: preencherSeVazio(
+          destino.numeroOutorga,
+          origem.numeroOutorga
+        ),
+        aquiferoLitologia: preencherSeVazio(
+          destino.aquiferoLitologia,
+          origem.aquiferoLitologia
+        ),
+        crivoPadrao: preencherSeVazio(destino.crivoPadrao, origem.crivoPadrao),
+        tuboEdutorPadrao: preencherSeVazio(
+          destino.tuboEdutorPadrao,
+          origem.tuboEdutorPadrao
+        ),
+        eletrodoSuperiorPadrao: preencherSeVazio(
+          destino.eletrodoSuperiorPadrao,
+          origem.eletrodoSuperiorPadrao
+        ),
+        eletrodoInferiorPadrao: preencherSeVazio(
+          destino.eletrodoInferiorPadrao,
+          origem.eletrodoInferiorPadrao
+        ),
+        bombaAtual: preencherSeVazio(destino.bombaAtual, origem.bombaAtual),
+        painelAtual: preencherSeVazio(destino.painelAtual, origem.painelAtual),
+        observacoesTecnicas: obsCombinada,
+        atualizadoEm: Date.now(),
+      };
+
+      await salvarPocoSupabase(destinoAtualizado);
+      await excluirPocoSupabase(origem.uuid);
+
+      const [listaPocos, listaRelatorios, listaClientes] = await Promise.all([
+        listarPocosSupabase(),
+        listarRelatoriosSupabase(),
+        listarClientesSupabase(),
+      ]);
+      const sincronizado = await sincronizarClientesComPocosSupabase(
+        listaPocos,
+        listaClientes
+      );
+      setClientesCadastrados(sincronizado.clientes);
+      setPocosCadastrados(sincronizado.pocosAtualizados);
+      setRelatoriosSalvos(listaRelatorios);
+      setPocoProntuarioSelecionadoUuid(destino.uuid);
+
+      setRelatorioAtivo((prev) => {
+        if (!ehDoOrigem(prev)) return prev;
+        return {
+          ...prev,
+          clienteUuid: destino.clienteUuid || prev.clienteUuid,
+          pocoUuid: destino.uuid,
+          cabecalho: {
+            ...prev.cabecalho,
+            cliente: destino.cliente || prev.cabecalho.cliente,
+            clienteCNPJ: destino.clienteCNPJ || prev.cabecalho.clienteCNPJ,
+          },
+          dadosPoco: {
+            ...prev.dadosPoco,
+            pocoId: destino.tag,
+          },
+        };
+      });
+
+      showToast(
+        `Cadastros unidos! "${origem.tag}" foi mesclado em "${destino.tag}" com ${movidos} O.S. transferida(s).`,
+        'success'
+      );
+    } catch {
+      showToast('Erro ao mesclar os cadastros de poços.', 'error');
+    }
+  };
+
+  // Seleciona cliente na etapa Identificação e filtra os poços exibidos exclusivamente para ele
+  const handleSelecionarClienteNaIdentificacao = (clienteUuid: string) => {
+    if (!clienteUuid) {
+      setRelatorioAtivo((prev) => ({
+        ...prev,
+        clienteUuid: undefined,
+      }));
+      return;
+    }
+
+    const cli = clientesCadastrados.find((c) => c.uuid === clienteUuid);
+    if (!cli) return;
+
+    setRelatorioAtivo((prev) => {
+      const pocoAtual = pocosCadastrados.find((p) => p.uuid === prev.pocoUuid);
+      const pocoPertence = pocoAtual ? pertenceAoCliente(pocoAtual, cli) : false;
+
+      return {
+        ...prev,
+        clienteUuid: cli.uuid,
+        pocoUuid: pocoPertence ? prev.pocoUuid : undefined,
+        cabecalho: {
+          ...prev.cabecalho,
+          cliente: cli.razaoSocial,
+          clienteCNPJ: cli.cnpjCpf || prev.cabecalho.clienteCNPJ,
+          cidadeUF: cli.cidadeUF || prev.cabecalho.cidadeUF,
+          contatoLocal: cli.contatoPrincipal || prev.cabecalho.contatoLocal,
+          telefoneContato: cli.telefone || prev.cabecalho.telefoneContato,
+        },
+      };
+    });
+
+    const qtdPocos = obterPocosDoCliente(pocosCadastrados, cli).length;
+    showToast(
+      `Cliente "${cli.razaoSocial}" selecionado (${qtdPocos} ${
+        qtdPocos === 1 ? 'poço cadastrado' : 'poços cadastrados'
+      }).`,
+      'success'
+    );
   };
 
   // Vincula um poço cadastrado ao relatório atual (preenche dados fixos e mantém NE/ND/Vazão editáveis para a visita)
@@ -417,8 +763,17 @@ export default function App() {
     const poco = pocosCadastrados.find((p) => p.uuid === pocoUuid);
     if (!poco) return;
 
+    const clienteDoPoco =
+      clientesCadastrados.find((c) => c.uuid === poco.clienteUuid) ||
+      clientesCadastrados.find(
+        (c) =>
+          normalizarTextoCliente(c.razaoSocial) ===
+          normalizarTextoCliente(poco.cliente)
+      );
+
     setRelatorioAtivo((prev) => ({
       ...prev,
+      clienteUuid: clienteDoPoco?.uuid || poco.clienteUuid || prev.clienteUuid,
       pocoUuid: poco.uuid,
       cabecalho: {
         ...prev.cabecalho,
@@ -444,6 +799,8 @@ export default function App() {
         eletrodoInferior:
           poco.eletrodoInferiorPadrao || prev.dadosPoco.eletrodoInferior,
         coordenadasUTM: poco.coordenadasUTM || prev.dadosPoco.coordenadasUTM,
+        aquiferoLitologia:
+          poco.aquiferoLitologia || prev.dadosPoco.aquiferoLitologia,
         especificacaoBomba:
           poco.bombaAtual || prev.dadosPoco.especificacaoBomba,
         painelEletrico: poco.painelAtual || prev.dadosPoco.painelEletrico,
@@ -459,7 +816,6 @@ export default function App() {
   // Inicia uma nova O.S. diretamente a partir da tela de Cadastro de Poços
   const handleIniciarNovaOSNoPoco = async (poco: CadastroPoco) => {
     try {
-      const logoSalva = await obterConfigPadrao('logoPadrao');
       const novo = criarRelatorioEmBranco(
         {
           razaoSocial: relatorioAtivo.cabecalho.razaoSocial,
@@ -467,13 +823,11 @@ export default function App() {
           enderecoEmpresa: relatorioAtivo.cabecalho.enderecoEmpresa,
           cidadeContatoEmpresa: relatorioAtivo.cabecalho.cidadeContatoEmpresa,
           emailEmpresa: relatorioAtivo.cabecalho.emailEmpresa,
-          logoBase64: logoSalva || relatorioAtivo.cabecalho.logoBase64,
+          logoBase64: logoEmpresaSessao || relatorioAtivo.cabecalho.logoBase64,
         },
         poco
       );
-      const salvo = await salvarRelatorio(novo);
-      setRelatoriosSalvos((prev) => [salvo, ...prev]);
-      setRelatorioAtivo(salvo);
+      setRelatorioAtivo(novo);
       setSecaoAtiva('identificacao');
       showToast(
         `Nova O.S. iniciada para o poço ${poco.tag} (${poco.cliente})!`,
@@ -497,10 +851,19 @@ export default function App() {
       return;
     }
 
+    const clienteMatch =
+      clientesCadastrados.find((c) => c.uuid === relatorioAtivo.clienteUuid) ||
+      clientesCadastrados.find(
+        (c) =>
+          normalizarTextoCliente(c.razaoSocial) ===
+          normalizarTextoCliente(cliente)
+      );
+
     const existente = pocosCadastrados.find(
       (p) =>
         p.uuid === relatorioAtivo.pocoUuid ||
-        p.tag.trim().toLowerCase() === tag.toLowerCase()
+        (p.tag.trim().toLowerCase() === tag.toLowerCase() &&
+          normalizarTextoCliente(p.cliente) === normalizarTextoCliente(cliente))
     );
 
     const agora = Date.now();
@@ -508,6 +871,7 @@ export default function App() {
       uuid:
         existente?.uuid ||
         `poco-${agora}-${Math.random().toString(36).slice(2, 7)}`,
+      clienteUuid: clienteMatch?.uuid || existente?.clienteUuid || '',
       tag,
       nomeIdentificacao:
         existente?.nomeIdentificacao || `Poço ${tag} — ${cliente}`,
@@ -541,7 +905,9 @@ export default function App() {
       dataPerfuracao: existente?.dataPerfuracao || '',
       numeroOutorga: existente?.numeroOutorga || '',
       aquiferoLitologia:
-        existente?.aquiferoLitologia || 'Sistema Aquífero Parecis',
+        relatorioAtivo.dadosPoco.aquiferoLitologia ||
+        existente?.aquiferoLitologia ||
+        '',
       crivoPadrao:
         relatorioAtivo.dadosPoco.crivo || existente?.crivoPadrao || '',
       tuboEdutorPadrao:
@@ -568,21 +934,37 @@ export default function App() {
     };
 
     try {
-      const salvo = await salvarPoco(registroPoco);
-      const lista = await listarPocos();
-      setPocosCadastrados(lista);
+      const ok = await salvarPocoSupabase(registroPoco);
+      if (!ok) {
+        showToast('Erro ao salvar poço no Supabase.', 'error');
+        return;
+      }
+      const [lista, listaClientes] = await Promise.all([
+        listarPocosSupabase(),
+        listarClientesSupabase(),
+      ]);
+      const sincronizado = await sincronizarClientesComPocosSupabase(
+        lista,
+        listaClientes
+      );
+      setClientesCadastrados(sincronizado.clientes);
+      setPocosCadastrados(sincronizado.pocosAtualizados);
+      const pocoSincronizado = sincronizado.pocosAtualizados.find(
+        (p) => p.uuid === registroPoco.uuid
+      );
       setRelatorioAtivo((prev) => ({
         ...prev,
-        pocoUuid: salvo.uuid,
+        clienteUuid: pocoSincronizado?.clienteUuid || prev.clienteUuid,
+        pocoUuid: registroPoco.uuid,
       }));
       showToast(
         existente
-          ? `Ficha cadastral do poço ${salvo.tag} atualizada com sucesso!`
-          : `Poço ${salvo.tag} cadastrado e vinculado a este relatório!`,
+          ? `Ficha cadastral do poço ${registroPoco.tag} atualizada no Supabase!`
+          : `Poço ${registroPoco.tag} cadastrado no Supabase e vinculado a este relatório!`,
         'success'
       );
     } catch {
-      showToast('Erro ao salvar poço no cadastro.', 'error');
+      showToast('Erro ao salvar poço no Supabase.', 'error');
     }
   };
 
@@ -645,12 +1027,8 @@ export default function App() {
         if (ctx) {
           ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
           const dataUrl = canvas.toDataURL('image/png');
+          setLogoEmpresaSessao(dataUrl);
           atualizarCabecalho('logoBase64', dataUrl);
-          try {
-            await salvarConfigPadrao('logoPadrao', dataUrl);
-          } catch {
-            // ignore
-          }
           showToast(
             'Logotipo institucional atualizado com sucesso!',
             'success'
@@ -803,19 +1181,37 @@ export default function App() {
     showToast(`Template "${tpl.titulo}" inserido no Memorial Descritivo!`);
   };
 
-  const handleSalvarTemplateCustom = (dados: {
+  const handleSalvarTemplateCustom = async (dados: {
     id?: string;
     titulo: string;
     categoria: string;
     conteudo: string;
   }) => {
-    salvarTemplateCustomizado(dados);
-    setListaTemplates(obterTodosTemplates());
+    const template: TemplateServico = {
+      id:
+        dados.id ||
+        `custom-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      titulo: dados.titulo.trim() || 'Template Sem Título',
+      categoria: dados.categoria.trim() || 'Personalizado',
+      conteudo: dados.conteudo.trim(),
+      isCustom: true,
+      criadoEm: Date.now(),
+    };
+    const ok = await salvarTemplateSupabase(template);
+    if (!ok) {
+      showToast('Erro ao salvar template no Supabase.', 'error');
+    }
+    const atualizados = await carregarTodosTemplatesSupabase();
+    setListaTemplates(atualizados);
   };
 
-  const handleExcluirTemplateCustom = (id: string) => {
-    excluirTemplateCustomizado(id);
-    setListaTemplates(obterTodosTemplates());
+  const handleExcluirTemplateCustom = async (id: string) => {
+    const ok = await excluirTemplateSupabase(id);
+    if (!ok) {
+      showToast('Erro ao excluir template no Supabase.', 'error');
+    }
+    const atualizados = await carregarTodosTemplatesSupabase();
+    setListaTemplates(atualizados);
   };
 
   // Aplica os dados extraídos de um PDF ou Foto de Ordem de Serviço Manuscrita
@@ -832,6 +1228,21 @@ export default function App() {
       (t) => t.id === 'manutencao-preventiva-completa'
     );
 
+    const mudouCidadeOuOS =
+      modo === 'novo' ||
+      (Boolean(dados.cidadeUF) &&
+        dados.cidadeUF !== base.cabecalho.cidadeUF);
+    const coordsBaseLimpa =
+      mudouCidadeOuOS &&
+      base.dadosPoco.coordenadasGeograficas?.includes('-21.1767')
+        ? ''
+        : base.dadosPoco.coordenadasGeograficas;
+    const coordsCabecalhoLimpas =
+      mudouCidadeOuOS &&
+      base.cabecalho.coordenadasGeograficas?.includes('-21.1767')
+        ? ''
+        : base.cabecalho.coordenadasGeograficas;
+
     const novoRelatorio: RelatorioTecnico = {
       ...base,
       atualizadoEm: Date.now(),
@@ -839,10 +1250,10 @@ export default function App() {
         ...base.cabecalho,
         contratoOS: dados.numeroOS || base.cabecalho.contratoOS,
         contratoRef: dados.contratoRef || base.cabecalho.contratoRef,
-        tipoServico:
-          dados.tipoServico ||
-          base.cabecalho.tipoServico ||
-          'MANUTENÇÃO PREVENTIVA DE POÇO ARTESIANO',
+        tipoServico: normalizarTipoServico(
+          dados.tipoServico || base.cabecalho.tipoServico,
+          'Manutenção Preventiva'
+        ),
         statusOS: 'Concluído',
         cliente: dados.cliente || base.cabecalho.cliente,
         contatoLocal:
@@ -853,6 +1264,7 @@ export default function App() {
           dados.telefoneContato || base.cabecalho.telefoneContato,
         localizacao: dados.localizacao || base.cabecalho.localizacao,
         cidadeUF: dados.cidadeUF || base.cabecalho.cidadeUF,
+        coordenadasGeograficas: coordsCabecalhoLimpas,
         dataExecucao: dados.dataExecucaoISO || base.cabecalho.dataExecucao,
       },
       dadosPoco: {
@@ -863,15 +1275,44 @@ export default function App() {
           dados.profundidadeTotal || base.dadosPoco.profundidadeTotal,
         diametroRevestimento:
           dados.diametroRevestimento || base.dadosPoco.diametroRevestimento,
+        nivelEstaticoInicial:
+          dados.nivelEstaticoInicial ||
+          dados.nivelEstatico ||
+          base.dadosPoco.nivelEstaticoInicial,
         nivelEstatico: dados.nivelEstatico || base.dadosPoco.nivelEstatico,
+        nivelDinamicoInicial:
+          dados.nivelDinamicoInicial ||
+          dados.nivelDinamico ||
+          base.dadosPoco.nivelDinamicoInicial,
         nivelDinamico: dados.nivelDinamico || base.dadosPoco.nivelDinamico,
+        vazaoInicial:
+          dados.vazaoInicial || dados.vazaoTeste || base.dadosPoco.vazaoInicial,
         vazaoTeste: dados.vazaoTeste || base.dadosPoco.vazaoTeste,
+        crivoInicial:
+          dados.crivoInicial || dados.crivo || base.dadosPoco.crivoInicial,
         crivo: dados.crivo || base.dadosPoco.crivo,
+        profundidadeBomba: '',
+        eletrodoSuperiorInicial:
+          dados.eletrodoSuperiorInicial ||
+          dados.eletrodoSuperior ||
+          base.dadosPoco.eletrodoSuperiorInicial,
         eletrodoSuperior:
           dados.eletrodoSuperior || base.dadosPoco.eletrodoSuperior,
+        eletrodoInferiorInicial:
+          dados.eletrodoInferiorInicial ||
+          dados.eletrodoInferior ||
+          base.dadosPoco.eletrodoInferiorInicial,
         eletrodoInferior:
           dados.eletrodoInferior || base.dadosPoco.eletrodoInferior,
         tuboEdutor: dados.tuboEdutor || base.dadosPoco.tuboEdutor,
+        coordenadasGeograficas: coordsBaseLimpa,
+        coordenadasUTM: mudouCidadeOuOS ? '' : base.dadosPoco.coordenadasUTM,
+        desenhoConstrutivo: mudouCidadeOuOS
+          ? ''
+          : base.dadosPoco.desenhoConstrutivo,
+        parecerHidrogeologico: mudouCidadeOuOS
+          ? ''
+          : base.dadosPoco.parecerHidrogeologico,
         especificacaoBomba:
           dados.especificacaoBomba || base.dadosPoco.especificacaoBomba,
         motobombaEstado: dados.motobombaEstado
@@ -881,6 +1322,19 @@ export default function App() {
           : 'Usado',
         painelEletrico:
           dados.painelEletrico || base.dadosPoco.painelEletrico,
+        testeVazaoSEMA:
+          mudouCidadeOuOS &&
+          base.dadosPoco.testeVazaoSEMA &&
+          (base.dadosPoco.testeVazaoSEMA.etapas?.[2]?.vazaoM3h === '10,29' ||
+            base.dadosPoco.testeVazaoSEMA.artNumero === 'MT-2026-0098412')
+            ? {
+                ...base.dadosPoco.testeVazaoSEMA,
+                ativo: false,
+                etapas: [],
+                vazaoOutorgaRecomendadaM3h: '',
+                nivelRecuperacaoFinalM: '',
+              }
+            : base.dadosPoco.testeVazaoSEMA,
       },
       descricaoServico:
         base.descricaoServico.trim() ||
@@ -942,63 +1396,435 @@ export default function App() {
     setSecaoAtiva('preview');
 
     try {
-      const salvo = await salvarRelatorio(novoRelatorio);
-      setRelatoriosSalvos((prev) => {
-        const semAtual = prev.filter((r) => r.uuid !== salvo.uuid);
-        return [salvo, ...semAtual].sort(
-          (a, b) => b.atualizadoEm - a.atualizadoEm
+      const resNuvem = await salvarRelatorioSupabase(novoRelatorio);
+      if (resNuvem.sucesso) {
+        const listaNuvem = await listarRelatoriosSupabase();
+        setRelatoriosSalvos(listaNuvem);
+        setHorarioUltimoSave(new Date().toLocaleTimeString('pt-BR'));
+        showToast(
+          `Ordem de Serviço ${dados.numeroOS || ''} importada e salva no Supabase!`,
+          'success'
         );
-      });
-      if (isSupabaseConfigured) {
-        const resNuvem = await salvarRelatorioSupabase(salvo);
-        if (resNuvem.sucesso) {
-          const listaNuvem = await listarRelatoriosSupabase();
-          if (listaNuvem && listaNuvem.length > 0) {
-            setRelatoriosSupabase(listaNuvem);
-          }
-        }
+      } else {
+        showToast(
+          `Dados preenchidos, mas houve falha ao salvar no Supabase: ${resNuvem.erro || ''}`,
+          'error'
+        );
       }
-      showToast(
-        `Ordem de Serviço ${dados.numeroOS || ''} importada e sincronizada com sucesso!`,
-        'success'
-      );
     } catch {
       showToast(
-        'Dados da O.S. preenchidos no relatório com sucesso!',
+        'Dados da O.S. preenchidos no relatório!',
         'success'
       );
     }
   };
 
-  // Fotos 1:1
-  const handleSelecionarFotos = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  const handleAbrirLancamentoRapido = (
+    clienteUuid?: string,
+    pocoUuid?: string
+  ) => {
+    setFiltroLancamentoRapido({ clienteUuid, pocoUuid });
+    setModalLancamentoRapidoAberta(true);
+  };
 
+  // Processa a importação em lote de múltiplas O.S. históricas (2024 -> presente), criando Clientes e Poços automaticamente se necessário
+  const handleImportarLoteOS = async (
+    linhas: LinhaLancamentoHistoricoOS[]
+  ) => {
+    if (linhas.length === 0) return;
+
+    try {
+      let listaClientesAtual = await listarClientesSupabase();
+      let listaPocosAtual = await listarPocosSupabase();
+      const relatoriosCriados: RelatorioTecnico[] = [];
+
+      // Ordena cronologicamente para que o cadastro do poço fique atualizado com os equipamentos mais recentes
+      const linhasOrdenadas = [...linhas].sort((a, b) =>
+        (a.dataExecucaoISO || '').localeCompare(b.dataExecucaoISO || '')
+      );
+
+      for (let i = 0; i < linhasOrdenadas.length; i++) {
+        const l = linhasOrdenadas[i];
+        const agora = Date.now() + i;
+        const nomeCliLimpo = (
+          l.clienteNome || 'CLIENTE NÃO IDENTIFICADO'
+        ).trim();
+        const normCli = normalizarTextoCliente(nomeCliLimpo);
+
+        // 1. Localiza ou cria o Cliente diretamente no Supabase
+        let clienteObj = listaClientesAtual.find(
+          (c) =>
+            normalizarTextoCliente(c.razaoSocial) === normCli ||
+            (l.clienteCNPJ &&
+              c.cnpjCpf &&
+              normalizarTextoCliente(c.cnpjCpf) ===
+                normalizarTextoCliente(l.clienteCNPJ))
+        );
+
+        if (!clienteObj) {
+          const novoCliente: CadastroCliente = {
+            uuid: gerarUuidV4(),
+            razaoSocial: nomeCliLimpo,
+            nomeFantasia: '',
+            cnpjCpf: l.clienteCNPJ || '',
+            enderecoSede: l.nomeLocalPoco || '',
+            cidadeUF: l.cidadeUF || 'Cuiabá - MT',
+            contatoPrincipal: '',
+            telefone: '',
+            email: '',
+            observacoes:
+              'Cadastrado automaticamente via Lançamento Rápido de Histórico.',
+            criadoEm: agora,
+            atualizadoEm: agora,
+          };
+          await salvarClienteSupabase(novoCliente);
+          clienteObj = novoCliente;
+          listaClientesAtual = [...listaClientesAtual, clienteObj];
+        }
+
+        // 2. Localiza ou cria/atualiza o Poço vinculado a este Cliente diretamente no Supabase
+        const tagLimpa = (l.pocoTag || 'PT-01').trim().toUpperCase();
+        let pocoObj = listaPocosAtual.find(
+          (p) =>
+            p.tag.trim().toUpperCase() === tagLimpa &&
+            (p.clienteUuid === clienteObj!.uuid ||
+              normalizarTextoCliente(p.cliente) === normCli)
+        );
+
+        if (!pocoObj) {
+          const novoPoco: CadastroPoco = {
+            uuid: gerarUuidV4(),
+            clienteUuid: clienteObj.uuid,
+            tag: tagLimpa,
+            nomeIdentificacao:
+              l.nomeLocalPoco || `Poço ${tagLimpa} — ${clienteObj.razaoSocial}`,
+            cliente: clienteObj.razaoSocial,
+            clienteCNPJ: l.clienteCNPJ || clienteObj.cnpjCpf || '',
+            enderecoLocal:
+              l.nomeLocalPoco || clienteObj.enderecoSede || l.cidadeUF || '',
+            cidadeUF: l.cidadeUF || clienteObj.cidadeUF || 'Cuiabá - MT',
+            coordenadasUTM: '',
+            contatoLocal: clienteObj.contatoPrincipal || '',
+            telefoneContato: clienteObj.telefone || '',
+            profundidadeTotal: l.profundidadeTotal || '150,00 m',
+            diametroRevestimento: l.diametroRevestimento || '6"',
+            dataPerfuracao: '',
+            numeroOutorga: '',
+            aquiferoLitologia: 'Sistema Aquífero Parecis',
+            crivoPadrao: l.crivoDepois || l.crivoAntes || '',
+            tuboEdutorPadrao: l.tuboEdutor || 'Geomecânico',
+            eletrodoSuperiorPadrao: l.eletrodoSup || '',
+            eletrodoInferiorPadrao: l.eletrodoInf || '',
+            bombaAtual: l.especificacaoBomba || '',
+            painelAtual: l.painelEletrico || '',
+            observacoesTecnicas: l.observacoesCampo || '',
+            criadoEm: agora,
+            atualizadoEm: agora,
+          };
+          await salvarPocoSupabase(novoPoco);
+          pocoObj = novoPoco;
+          listaPocosAtual = [...listaPocosAtual, pocoObj];
+        } else {
+          // Atualiza os equipamentos atuais do poço com os dados desta O.S. mais recente
+          const pocoAtualizado: CadastroPoco = {
+            ...pocoObj,
+            clienteUuid: clienteObj.uuid,
+            profundidadeTotal:
+              l.profundidadeTotal || pocoObj.profundidadeTotal,
+            diametroRevestimento:
+              l.diametroRevestimento || pocoObj.diametroRevestimento,
+            crivoPadrao:
+              l.crivoDepois || l.crivoAntes || pocoObj.crivoPadrao,
+            tuboEdutorPadrao: l.tuboEdutor || pocoObj.tuboEdutorPadrao,
+            eletrodoSuperiorPadrao:
+              l.eletrodoSup || pocoObj.eletrodoSuperiorPadrao,
+            eletrodoInferiorPadrao:
+              l.eletrodoInf || pocoObj.eletrodoInferiorPadrao,
+            bombaAtual: l.especificacaoBomba || pocoObj.bombaAtual,
+            painelAtual: l.painelEletrico || pocoObj.painelAtual,
+            atualizadoEm: agora,
+          };
+          await salvarPocoSupabase(pocoAtualizado);
+          pocoObj = pocoAtualizado;
+          listaPocosAtual = listaPocosAtual.map((p) =>
+            p.uuid === pocoObj!.uuid ? pocoObj! : p
+          );
+        }
+
+        // 3. Monta o Relatório Técnico (Ordem de Serviço)
+        const baseBranco = criarRelatorioEmBranco(
+          {
+            razaoSocial: relatorioAtivo.cabecalho.razaoSocial,
+            cnpj: relatorioAtivo.cabecalho.cnpj,
+            enderecoEmpresa: relatorioAtivo.cabecalho.enderecoEmpresa,
+            cidadeContatoEmpresa: relatorioAtivo.cabecalho.cidadeContatoEmpresa,
+            emailEmpresa: relatorioAtivo.cabecalho.emailEmpresa,
+            logoBase64: logoEmpresaSessao || relatorioAtivo.cabecalho.logoBase64,
+          },
+          pocoObj
+        );
+
+        const fmtComUnidade = (v: string, sufixo: string) => {
+          const limpo = (v || '').trim();
+          if (!limpo) return '';
+          if (
+            limpo.toLowerCase().includes(sufixo.toLowerCase().trim()) ||
+            /[a-zA-Z]/.test(limpo)
+          ) {
+            return limpo;
+          }
+          return `${limpo}${sufixo}`;
+        };
+
+        const neAntesFmt = fmtComUnidade(l.neAntes || l.neDepois, ' m');
+        const neDepoisFmt = fmtComUnidade(l.neDepois || l.neAntes, ' m');
+        const ndAntesFmt = fmtComUnidade(l.ndAntes || l.ndDepois, ' m');
+        const ndDepoisFmt = fmtComUnidade(l.ndDepois || l.ndAntes, ' m');
+        const qAntesFmt = fmtComUnidade(l.vazaoAntes || l.vazaoDepois, ' m³/h');
+        const qDepoisFmt = fmtComUnidade(l.vazaoDepois || l.vazaoAntes, ' m³/h');
+        const crivoAntesFmt = fmtComUnidade(l.crivoAntes || l.crivoDepois, ' m');
+        const crivoDepoisFmt = fmtComUnidade(
+          l.crivoDepois || l.crivoAntes,
+          ' m'
+        );
+
+        const testeSimulado = l.simularTesteVazao
+          ? gerarDadosTesteSimuladoParaHistorico(
+              l.neDepois || l.neAntes,
+              l.ndDepois || l.ndAntes,
+              l.vazaoDepois || l.vazaoAntes,
+              l.duracaoTesteLabel,
+              l.dataExecucaoISO,
+              relatorioAtivo.cabecalho.responsavelTecnicoNome,
+              relatorioAtivo.cabecalho.responsavelTecnicoCREA
+            )
+          : undefined;
+
+        const equipeLista: MembroEquipe[] = l.equipeTexto
+          ? l.equipeTexto
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((str, idx) => {
+                const m = str.match(/^(.+?)\s*\((.+)\)$/);
+                return {
+                  id: `eq-lote-${agora}-${idx}`,
+                  nome: m ? m[1].trim() : str,
+                  funcao: m ? m[2].trim() : 'Técnico de Campo',
+                };
+              })
+          : baseBranco.equipe;
+
+        const servicosLista: ItemServicoConduzido[] = l.servicosTexto
+          ? l.servicosTexto
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((desc, idx) => ({
+                id: `srv-lote-${agora}-${idx}`,
+                descricao: desc,
+                unidade: 'UN',
+                quantidade: '1,00',
+                status: 'Executado',
+              }))
+          : baseBranco.servicosConduzidos;
+
+        const materiaisLista: ItemMaterialAplicado[] = l.materiaisTexto
+          ? l.materiaisTexto
+              .split('|')
+              .map((s) => s.trim())
+              .filter(Boolean)
+              .map((str, idx) => {
+                const m = str.match(/^(.+?)\s*\(([\d.,]+)\s*([a-zA-Z]+)\)$/);
+                return {
+                  id: `mat-lote-${agora}-${idx}`,
+                  descricao: m ? m[1].trim() : str,
+                  quantidade: m ? m[2].trim() : '1,00',
+                  unidade: m ? m[3].toUpperCase() : 'UN',
+                  situacao: 'Aplicado',
+                };
+              })
+          : [];
+
+        const timestampExec = l.dataExecucaoISO
+          ? new Date(`${l.dataExecucaoISO}T12:00:00`).getTime() || agora
+          : agora;
+
+        const relatorioMontado: RelatorioTecnico = {
+          ...baseBranco,
+          uuid: `rel-hist-${agora}-${Math.random().toString(36).slice(2, 6)}`,
+          clienteUuid: clienteObj.uuid,
+          pocoUuid: pocoObj.uuid,
+          status: 'finalizado',
+          cabecalho: {
+            ...baseBranco.cabecalho,
+            cliente: clienteObj.razaoSocial,
+            clienteCNPJ: l.clienteCNPJ || clienteObj.cnpjCpf || '',
+            contratoOS: l.numeroOS || `OS-${i + 1}`,
+            tipoServico: normalizarTipoServico(
+              l.tipoServico,
+              'Manutenção Preventiva'
+            ),
+            statusOS: 'Concluído',
+            localizacao:
+              l.nomeLocalPoco || pocoObj.enderecoLocal || l.cidadeUF || '',
+            cidadeUF: l.cidadeUF || pocoObj.cidadeUF || 'Cuiabá - MT',
+            dataExecucao:
+              l.dataExecucaoISO || new Date().toISOString().split('T')[0],
+          },
+          dadosPoco: {
+            ...baseBranco.dadosPoco,
+            incluirNoRelatorio: true,
+            pocoId: pocoObj.tag,
+            profundidadeTotal: fmtComUnidade(
+              l.profundidadeTotal || pocoObj.profundidadeTotal,
+              ' m'
+            ),
+            diametroRevestimento:
+              l.diametroRevestimento || pocoObj.diametroRevestimento || '6"',
+            nivelEstaticoInicial: neAntesFmt,
+            nivelEstatico: neDepoisFmt,
+            nivelDinamicoInicial: ndAntesFmt,
+            nivelDinamico: ndDepoisFmt,
+            vazaoInicial: qAntesFmt,
+            vazaoTeste: qDepoisFmt,
+            crivoInicial: crivoAntesFmt,
+            crivo: crivoDepoisFmt,
+            eletrodoSuperiorInicial: l.eletrodoSup || '',
+            eletrodoSuperior: l.eletrodoSup || '',
+            eletrodoInferiorInicial: l.eletrodoInf || '',
+            eletrodoInferior: l.eletrodoInf || '',
+            tuboEdutor: l.tuboEdutor || pocoObj.tuboEdutorPadrao || '',
+            especificacaoBomba:
+              l.especificacaoBomba || pocoObj.bombaAtual || '',
+            motobombaEstado: 'Usado',
+            painelEletrico: l.painelEletrico || pocoObj.painelAtual || '',
+            painelEstado: 'Usado',
+            testeVazaoSEMA: testeSimulado || {
+              ...(baseBranco.dadosPoco.testeVazaoSEMA as DadosTesteVazaoSEMA),
+              ativo: false,
+            },
+          },
+          descricaoServico:
+            l.servicosTexto
+              ? `Serviços executados referente à O.S. ${l.numeroOS}: ${l.servicosTexto.replace(
+                  /\s*\|\s*/g,
+                  '; '
+                )}.`
+              : baseBranco.descricaoServico,
+          equipe: equipeLista,
+          servicosConduzidos: servicosLista,
+          materiaisAplicados: materiaisLista,
+          ocorrenciasCampo: {
+            ...baseBranco.ocorrenciasCampo,
+            recomendacoes: l.observacoesCampo || '',
+            observacoesGerais: l.observacoesCampo || '',
+          },
+          criadoEm: timestampExec,
+          atualizadoEm: timestampExec,
+        };
+
+        await salvarRelatorioSupabase(relatorioMontado);
+        relatoriosCriados.push(relatorioMontado);
+      }
+
+      const [todosClientes, todosPocos, todosRelatorios] = await Promise.all([
+        listarClientesSupabase(),
+        listarPocosSupabase(),
+        listarRelatoriosSupabase(),
+      ]);
+      const sincronizado = await sincronizarClientesComPocosSupabase(
+        todosPocos,
+        todosClientes
+      );
+
+      setClientesCadastrados(sincronizado.clientes);
+      setPocosCadastrados(sincronizado.pocosAtualizados);
+      setRelatoriosSalvos(todosRelatorios);
+
+      if (relatoriosCriados.length > 0) {
+        setRelatorioAtivo(relatoriosCriados[relatoriosCriados.length - 1]);
+      }
+
+      showToast(
+        `${relatoriosCriados.length} ${
+          relatoriosCriados.length === 1
+            ? 'Ordem de Serviço salva'
+            : 'Ordens de Serviço salvas'
+        } no Supabase com Clientes e Poços vinculados!`,
+        'success'
+      );
+    } catch {
+      showToast('Erro ao processar o lote de Ordens de Serviço.', 'error');
+    }
+  };
+
+  // Fotos 1:1
+  const processarArquivosFotos = (files: FileList | File[]) => {
     const listaArquivos: File[] = Array.from(files);
+    if (listaArquivos.length === 0) return;
+
     const lidos: ArquivoParaCorte[] = [];
     let processados = 0;
+    let ignorados = 0;
+
+    const ehArquivoImagem = (arquivo: File) => {
+      if (arquivo.type && arquivo.type.startsWith('image/')) return true;
+      return /\.(jpe?g|png|webp|gif|bmp|avif|heic|heif|svg)$/i.test(
+        arquivo.name || ''
+      );
+    };
+
+    const finalizarLote = () => {
+      if (processados === listaArquivos.length) {
+        if (lidos.length > 0) {
+          setFilaParaCorte(lidos);
+        } else if (ignorados > 0) {
+          showToast(
+            'Formato de arquivo não suportado. Selecione uma foto em JPG, PNG ou WebP.',
+            'error'
+          );
+        }
+      }
+    };
 
     listaArquivos.forEach((arquivo, idx) => {
-      if (!arquivo.type.startsWith('image/')) {
+      if (!ehArquivoImagem(arquivo)) {
         processados++;
+        ignorados++;
+        finalizarLote();
         return;
       }
       const reader = new FileReader();
       reader.onload = () => {
+        let dataUrl = String(reader.result || '');
+        if (dataUrl.startsWith('data:application/octet-stream')) {
+          dataUrl = dataUrl.replace(
+            'data:application/octet-stream',
+            'data:image/jpeg'
+          );
+        }
         lidos.push({
           id: `crop-${Date.now()}-${idx}`,
-          nomeArquivo: arquivo.name,
-          dataUrlOriginal: String(reader.result),
+          nomeArquivo: arquivo.name || `foto-${idx + 1}.jpg`,
+          dataUrlOriginal: dataUrl,
         });
         processados++;
-        if (processados === listaArquivos.length && lidos.length > 0) {
-          setFilaParaCorte(lidos);
-        }
+        finalizarLote();
+      };
+      reader.onerror = () => {
+        processados++;
+        ignorados++;
+        finalizarLote();
       };
       reader.readAsDataURL(arquivo);
     });
+  };
 
+  const handleSelecionarFotos = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    processarArquivosFotos(files);
     e.target.value = '';
   };
 
@@ -1015,6 +1841,9 @@ export default function App() {
       return {
         ...prev,
         fotos: [...prev.fotos, novaFoto],
+        secoesVisiveis: prev.secoesVisiveis
+          ? { ...prev.secoesVisiveis, fotos: true }
+          : undefined,
       };
     });
     showToast('Evidência fotográfica 1:1 adicionada com sucesso!', 'success');
@@ -1057,38 +1886,127 @@ export default function App() {
     showToast('Evidência fotográfica removida.', 'success');
   };
 
-  // Novo Relatório / Clonar / Excluir
-  const handleConfirmarNovoRelatorio = async () => {
-    try {
-      const logoSalva = await obterConfigPadrao('logoPadrao');
-      const novo = criarRelatorioEmBranco({
-        razaoSocial: relatorioAtivo.cabecalho.razaoSocial,
-        cnpj: relatorioAtivo.cabecalho.cnpj,
-        enderecoEmpresa: relatorioAtivo.cabecalho.enderecoEmpresa,
-        cidadeContatoEmpresa: relatorioAtivo.cabecalho.cidadeContatoEmpresa,
-        emailEmpresa: relatorioAtivo.cabecalho.emailEmpresa,
-        logoBase64: logoSalva || relatorioAtivo.cabecalho.logoBase64,
-      });
-      const salvo = await salvarRelatorio(novo);
-      setRelatoriosSalvos((prev) => [salvo, ...prev]);
-      setRelatorioAtivo(salvo);
-      setSecaoAtiva('identificacao');
-      setModalNovoRelatorioAberto(false);
-      showToast('Formulário limpo! Novo relatório iniciado.', 'success');
-    } catch {
-      showToast('Erro ao iniciar novo relatório.', 'error');
-    }
+  // Novo Relatório / Clonar / Excluir / Reset Total Protegido
+  const handleConfirmarNovoRelatorio = () => {
+    const novo = criarRelatorioEmBranco({
+      razaoSocial: relatorioAtivo.cabecalho.razaoSocial,
+      cnpj: relatorioAtivo.cabecalho.cnpj,
+      enderecoEmpresa: relatorioAtivo.cabecalho.enderecoEmpresa,
+      cidadeContatoEmpresa: relatorioAtivo.cabecalho.cidadeContatoEmpresa,
+      emailEmpresa: relatorioAtivo.cabecalho.emailEmpresa,
+      logoBase64: logoEmpresaSessao || relatorioAtivo.cabecalho.logoBase64,
+    });
+    setRelatorioAtivo(novo);
+    setSecaoAtiva('identificacao');
+    setModalNovoRelatorioAberto(false);
+    showToast('Formulário limpo! Novo relatório iniciado.', 'success');
   };
 
   const handleBuscarRelatoriosSupabase = async () => {
     setCarregandoSupabase(true);
     try {
       const lista = await listarRelatoriosSupabase();
-      setRelatoriosSupabase(lista);
+      setRelatoriosSalvos(lista);
     } catch (err) {
       console.warn('Erro ao carregar do Supabase:', err);
     } finally {
       setCarregandoSupabase(false);
+    }
+  };
+
+  const handleVerificarTabelasSupabase = async () => {
+    setVerificandoTabelas(true);
+    try {
+      const resultado = await verificarTabelasSupabase();
+      setStatusTabelasSupabase(resultado);
+      const existeAlgumaAusente = resultado.some((t) => !t.existe);
+      if (existeAlgumaAusente) {
+        setMostrarSqlSupabase(true);
+      }
+    } finally {
+      setVerificandoTabelas(false);
+    }
+  };
+
+  const handleCopiarSqlSupabase = async () => {
+    try {
+      await navigator.clipboard.writeText(SQL_COMPLETO_TABELAS_SUPABASE);
+      setSqlCopiado(true);
+      showToast(
+        'SQL completo copiado! Cole no SQL Editor do Supabase e clique em Run.',
+        'success'
+      );
+      window.setTimeout(() => setSqlCopiado(false), 3000);
+    } catch {
+      showToast(
+        'Não foi possível copiar automaticamente. Selecione o texto do SQL abaixo.',
+        'error'
+      );
+    }
+  };
+
+  const handleAbrirModalReset = () => {
+    setConfirmacaoTextoReset('');
+    setErroReset(null);
+    setSqlCopiado(false);
+    setMostrarSqlSupabase(false);
+    setModalResetAberto(true);
+    handleVerificarTabelasSupabase();
+  };
+
+  const handleConfirmarResetTotal = async () => {
+    if (confirmacaoTextoReset.trim().toUpperCase() !== 'ZERAR') {
+      setErroReset('Digite a palavra ZERAR exatamente como indicado para confirmar.');
+      return;
+    }
+
+    setExecutandoReset(true);
+    setErroReset(null);
+
+    try {
+      const res = await zerarDadosOperacionaisSupabase();
+      if (!res.sucesso) {
+        setErroReset(
+          res.erros.join(' | ') ||
+            'Não foi possível concluir o reset completo no Supabase. Verifique permissões (RLS) das tabelas.'
+        );
+        setMostrarSqlSupabase(true);
+        return;
+      }
+
+      const logoPadrao = gerarLogoGeoestePadrao();
+      setLogoEmpresaSessao(logoPadrao);
+      setClientesCadastrados([]);
+      setPocosCadastrados([]);
+      setRelatoriosSalvos([]);
+      setPocoProntuarioSelecionadoUuid('');
+      setRelatorioAtivo(
+        criarRelatorioEmBranco({
+          ...CABECALHO_INSTITUCIONAL_PADRAO,
+          logoBase64: logoPadrao,
+        })
+      );
+      setHorarioUltimoSave('');
+      setSecaoAtiva('identificacao');
+      setModalResetAberto(false);
+      setModalHistoricoAberto(false);
+      setConfirmacaoTextoReset('');
+
+      const avisoAusentes =
+        res.tabelasAusentes.length > 0
+          ? ` (Nota: tabela(s) ainda não criada(s) no Supabase: ${res.tabelasAusentes.join(', ')}).`
+          : '';
+
+      showToast(
+        `Sistema zerado no Supabase! Removidos: ${res.relatoriosRemovidos} relatório(s), ${res.pocosRemovidos} poço(s) e ${res.clientesRemovidos} cliente(s). Templates preservados!${avisoAusentes}`,
+        'success'
+      );
+    } catch (err: any) {
+      setErroReset(
+        err?.message || 'Erro inesperado ao zerar os dados no Supabase.'
+      );
+    } finally {
+      setExecutandoReset(false);
     }
   };
 
@@ -1102,7 +2020,7 @@ export default function App() {
       const copia: RelatorioTecnico = {
         ...relatorioEscolhido,
         id: agora,
-        uuid: `rel-clone-${agora}`,
+        uuid: gerarUuidV4(),
         status: 'rascunho',
         cabecalho: {
           ...relatorioEscolhido.cabecalho,
@@ -1123,7 +2041,10 @@ export default function App() {
       setModalHistoricoAberto(false);
       if (irParaPreview) {
         setSecaoAtiva('preview');
-      } else if (secaoAtiva === 'cadastro_pocos') {
+      } else if (
+        secaoAtiva === 'cadastro_pocos' ||
+        secaoAtiva === 'cadastro_clientes'
+      ) {
         setSecaoAtiva('identificacao');
       }
       showToast('Relatório carregado com sucesso!', 'success');
@@ -1132,42 +2053,158 @@ export default function App() {
 
   const handleExcluirDoHistorico = async (uuid: string) => {
     try {
-      await excluirRelatorio(uuid);
+      const ok = await excluirRelatorioSupabase(uuid);
+      if (!ok) {
+        showToast('Erro ao excluir relatório no Supabase.', 'error');
+        return;
+      }
       const restantes = relatoriosSalvos.filter((r) => r.uuid !== uuid);
-      if (restantes.length === 0) {
-        const novo = criarRelatorioEmBranco(relatorioAtivo.cabecalho);
-        const salvo = await salvarRelatorio(novo);
-        setRelatoriosSalvos([salvo]);
-        setRelatorioAtivo(salvo);
-      } else {
-        setRelatoriosSalvos(restantes);
-        if (relatorioAtivo.uuid === uuid) {
+      setRelatoriosSalvos(restantes);
+      if (relatorioAtivo.uuid === uuid) {
+        if (restantes.length > 0) {
           setRelatorioAtivo(restantes[0]);
+        } else {
+          setRelatorioAtivo(
+            criarRelatorioEmBranco({
+              ...CABECALHO_INSTITUCIONAL_PADRAO,
+              logoBase64: logoEmpresaSessao,
+            })
+          );
         }
       }
-      showToast('Relatório removido do navegador.', 'success');
+      showToast('Relatório removido do Supabase.', 'success');
     } catch {
       showToast('Erro ao excluir relatório.', 'error');
     }
   };
 
-  // Exportação PDF via jsPDF (do relatório ativo ou de um relatório específico do histórico do poço)
-  const handleExportarPDF = async (relatorioAlvo?: RelatorioTecnico) => {
+  // Abre o modal de Auditoria Hidrogeológica / Parecer Normativo
+  const handleAbrirAuditoriaHidrogeologica = (
+    relatorioAlvo?: RelatorioTecnico,
+    bloquearExport = false
+  ) => {
     const alvo = relatorioAlvo || relatorioAtivo;
+    const auditoriaLocal = executarAuditoriaDeterministicaRelatorio(alvo);
+    setResultadoAuditoria(auditoriaLocal);
+    setModoBloqueioExportacao(bloquearExport);
+    setRelatorioPendenteExportacao(alvo);
+    setModalAuditoriaAberta(true);
+  };
+
+  // Chama a rota POST /api/gerar-parecer-hidrogeologico com os coeficientes B e C pré-calculados
+  const handleExecutarAuditoriaParecerIA = async () => {
+    const alvo = relatorioPendenteExportacao || relatorioAtivo;
+    setCarregandoAuditoriaIA(true);
+    try {
+      const payload = montarPayloadParecerHidrogeologico(alvo);
+      const response = await fetch('/api/gerar-parecer-hidrogeologico', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const json = await response.json();
+      if (!response.ok || !json.sucesso) {
+        throw new Error(
+          json.error || 'Não foi possível gerar o parecer hidrogeológico.'
+        );
+      }
+
+      const resultadoIA: ResultadoAuditoriaRelatorio = {
+        ...json.resultado,
+        coeficientesCalculados:
+          payload.auditoriaLocalPrevia.coeficientesCalculados,
+      };
+      setResultadoAuditoria(resultadoIA);
+      showToast(
+        resultadoIA.statusAuditoria === 'APROVADO'
+          ? 'Auditoria aprovada! Parecer hidrogeológico estruturado gerado.'
+          : 'Auditoria concluída com alertas normativos.',
+        resultadoIA.statusAuditoria === 'APROVADO' ? 'success' : 'error'
+      );
+    } catch (err: any) {
+      showToast(
+        err?.message || 'Erro ao consultar o auditor hidrogeológico.',
+        'error'
+      );
+    } finally {
+      setCarregandoAuditoriaIA(false);
+    }
+  };
+
+  // Aplica os textos estruturados gerados (Geometria, Metodologia, Jacob-Rorabaugh s = B·Q + C·Q², Parecer e Checklist) no relatório ativo
+  const handleAplicarSecoesAuditoriaNoRelatorio = (
+    res: ResultadoAuditoriaRelatorio
+  ) => {
+    const sec = res.relatorioSecoes;
+    if (!sec) return;
+
+    setRelatorioAtivo((prev) => {
+      const parecerCombinado = [
+        sec['5_testeVazaoMetodologia'],
+        sec['6_interpretacaoHidrogeologicaJacobRorabaugh'],
+        sec['7_parecerVazaoRecomendada'],
+      ]
+        .filter((t) => t && t.trim())
+        .join('\n\n');
+
+      const checklistSincronizado =
+        Array.isArray(sec['8_checklistConformidadeSeguranca']) &&
+        sec['8_checklistConformidadeSeguranca'].length > 0
+          ? prev.checklist.map((chk, idx) => {
+              const itemIA = sec['8_checklistConformidadeSeguranca'][idx];
+              if (!itemIA) return chk;
+              return {
+                ...chk,
+                concluido: itemIA.status === 'CONFORME',
+                observacao: itemIA.observacao || chk.observacao,
+              };
+            })
+          : prev.checklist;
+
+      return {
+        ...prev,
+        descricaoServico:
+          sec['4_servicosManutencaoExecutados']?.trim() ||
+          prev.descricaoServico,
+        checklist: checklistSincronizado,
+        dadosPoco: {
+          ...prev.dadosPoco,
+          desenhoConstrutivo:
+            sec['3_geometriaConstrutivaPoco']?.trim() ||
+            prev.dadosPoco.desenhoConstrutivo,
+          parecerHidrogeologico:
+            parecerCombinado || prev.dadosPoco.parecerHidrogeologico,
+        },
+      };
+    });
+
+    showToast(
+      'Geometria, Interpretação Jacob-Rorabaugh (s = B·Q + C·Q²) e Parecer aplicados ao relatório!',
+      'success'
+    );
+  };
+
+  // Exportação PDF via jsPDF com trava de auditoria técnica pré-emissão
+  const executarExportacaoPDFDireta = async (alvo: RelatorioTecnico) => {
     try {
       setExportandoPdf(true);
+      setModalAuditoriaAberta(false);
       const nomeArquivo = await exportarRelatorioPDF(alvo);
       const atualizado: RelatorioTecnico = {
         ...alvo,
         status: 'exportado',
+        atualizadoEm: Date.now(),
       };
       if (alvo.uuid === relatorioAtivo.uuid) {
         setRelatorioAtivo(atualizado);
       }
-      await salvarRelatorio(atualizado);
-      setRelatoriosSalvos((prev) =>
-        prev.map((r) => (r.uuid === atualizado.uuid ? atualizado : r))
-      );
+      await salvarRelatorioSupabase(atualizado);
+      setRelatoriosSalvos((prev) => {
+        const existe = prev.some((r) => r.uuid === atualizado.uuid);
+        return existe
+          ? prev.map((r) => (r.uuid === atualizado.uuid ? atualizado : r))
+          : [atualizado, ...prev];
+      });
       showToast(`PDF exportado com sucesso: ${nomeArquivo}`, 'success');
     } catch {
       showToast('Erro ao exportar o arquivo PDF.', 'error');
@@ -1176,7 +2213,26 @@ export default function App() {
     }
   };
 
+  const handleExportarPDF = async (
+    relatorioAlvo?: RelatorioTecnico,
+    ignorarTravaAuditoria = false
+  ) => {
+    const alvo = relatorioAlvo || relatorioAtivo;
+    if (!ignorarTravaAuditoria) {
+      const auditoria = executarAuditoriaDeterministicaRelatorio(alvo);
+      if (auditoria.statusAuditoria !== 'APROVADO') {
+        setResultadoAuditoria(auditoria);
+        setModoBloqueioExportacao(true);
+        setRelatorioPendenteExportacao(alvo);
+        setModalAuditoriaAberta(true);
+        return;
+      }
+    }
+    await executarExportacaoPDFDireta(alvo);
+  };
+
   const [sidebarRetraida, setSidebarRetraida] = useState<boolean>(false);
+  const [sidebarMobileAberta, setSidebarMobileAberta] = useState<boolean>(false);
 
   // Avançar Fluxo Sequencial ("Próxima Seção ➔")
   const indiceSecaoAtual = SECOES_SIDEBAR.findIndex(
@@ -1201,6 +2257,21 @@ export default function App() {
   const fotosOrdenadas = [...relatorioAtivo.fotos].sort(
     (a, b) => a.ordem - b.ordem
   );
+
+  // Cliente atualmente vinculado ao relatório ativo (por clienteUuid ou razão social)
+  const clienteVinculadoAtivo =
+    clientesCadastrados.find((c) => c.uuid === relatorioAtivo.clienteUuid) ||
+    clientesCadastrados.find(
+      (c) =>
+        relatorioAtivo.cabecalho.cliente &&
+        normalizarTextoCliente(c.razaoSocial) ===
+          normalizarTextoCliente(relatorioAtivo.cabecalho.cliente)
+    );
+
+  // Poços disponíveis no seletor: se houver cliente vinculado, mostra SOMENTE os poços desse cliente
+  const pocosFiltradosParaIdentificacao = clienteVinculadoAtivo
+    ? obterPocosDoCliente(pocosCadastrados, clienteVinculadoAtivo)
+    : pocosCadastrados;
 
   // Poço atualmente vinculado ao relatório ativo (por uuid ou TAG)
   const pocoVinculadoAtivo = pocosCadastrados.find(
@@ -1237,13 +2308,19 @@ export default function App() {
         <div className="flex items-center gap-2.5 shrink-0">
           <button
             type="button"
-            onClick={() => setSidebarRetraida((prev) => !prev)}
+            onClick={() => {
+              if (window.innerWidth < 768) {
+                setSidebarMobileAberta((prev) => !prev);
+              } else {
+                setSidebarRetraida((prev) => !prev);
+              }
+            }}
             title={
               sidebarRetraida
                 ? 'Expandir menu lateral de seções'
-                : 'Recolher menu lateral para ampliar a tela do sistema'
+                : 'Recolher ou abrir menu lateral de seções'
             }
-            className="hidden lg:inline-flex items-center justify-center p-2 rounded-lg bg-white/10 hover:bg-white/15 text-white/90 hover:text-[#E8A020] transition-colors"
+            className="inline-flex items-center justify-center p-2 rounded-lg bg-white/10 hover:bg-white/15 text-white/90 hover:text-[#E8A020] transition-colors shrink-0"
           >
             {sidebarRetraida ? (
               <PanelLeftOpen className="w-4 h-4 text-[#E8A020]" />
@@ -1270,22 +2347,34 @@ export default function App() {
           <span
             title={
               isSupabaseConfigured
-                ? 'Conectado ao Supabase (Sincronização em Nuvem Ativa)'
-                : 'Modo Offline-First (IndexedDB Local Ativo. Configure VITE_SUPABASE_URL na Vercel para nuvem).'
+                ? 'Conectado exclusivamente ao Supabase (Banco em Nuvem Ativo)'
+                : 'Supabase não configurado'
             }
             className={`hidden md:inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-semibold ${
               isSupabaseConfigured
                 ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                : 'bg-white/10 text-white/70 border border-white/15'
+                : 'bg-red-500/20 text-red-200 border border-red-400/40'
             }`}
           >
             <Cloud className="w-3 h-3 shrink-0" />
-            <span>{isSupabaseConfigured ? 'Supabase' : 'IndexedDB Local'}</span>
+            <span>{isSupabaseConfigured ? 'Supabase Nuvem' : 'Sem Conexão'}</span>
           </span>
         </div>
 
         {/* Zone 2: Nav Links (Desktop & Tablet) */}
         <nav className="hidden md:flex items-center gap-2 lg:gap-4 xl:gap-6 text-xs font-semibold text-white/85 overflow-x-auto no-scrollbar">
+          <button
+            type="button"
+            onClick={() => setSecaoAtiva('cadastro_clientes')}
+            className={`px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-[#E8A020] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+              secaoAtiva === 'cadastro_clientes'
+                ? 'bg-white/10 text-[#E8A020]'
+                : ''
+            }`}
+          >
+            <Users className="w-3.5 h-3.5 text-[#E8A020]" />
+            <span>Clientes ({clientesCadastrados.length})</span>
+          </button>
           <button
             type="button"
             onClick={() => setSecaoAtiva('cadastro_pocos')}
@@ -1307,7 +2396,7 @@ export default function App() {
             className="px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-[#E8A020] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
           >
             <FolderOpen className="w-3.5 h-3.5 text-[#E8A020]" />
-            <span>Histórico ({relatoriosSupabase.length > 0 ? relatoriosSupabase.length : relatoriosSalvos.length})</span>
+            <span>Histórico ({relatoriosSalvos.length})</span>
           </button>
           <button
             type="button"
@@ -1324,17 +2413,53 @@ export default function App() {
             title="Importar Ficha de Campo / Ordem de Serviço Manuscrita em PDF ou Foto"
           >
             <Sparkles className="w-3.5 h-3.5" />
-            <span>Importar</span>
+            <span>Importar O.S.</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setSecaoAtiva('conversor_lote')}
+            className={`px-2.5 py-1.5 rounded-lg border transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 font-bold ${
+              secaoAtiva === 'conversor_lote'
+                ? 'bg-[#E8A020] border-[#E8A020] text-[#1B2A3B]'
+                : 'bg-sky-500/15 border-sky-400/40 text-sky-300 hover:bg-sky-400 hover:text-slate-950'
+            }`}
+            title="Conversor & Conferência Lado a Lado de PDFs em Lote (Exportação Excel .xlsx / CSV 29 Colunas)"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5" />
+            <span>Conversor PDF</span>
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              handleAbrirLancamentoRapido(
+                clienteVinculadoAtivo?.uuid,
+                pocoVinculadoAtivo?.uuid
+              )
+            }
+            className="px-2.5 py-1.5 rounded-lg bg-white/10 border border-white/15 text-white/90 hover:bg-white/20 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 font-semibold"
+            title="Central Rápida de Planilha Excel/CSV"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-[#E8A020]" />
+            <span>Lote / Excel</span>
           </button>
           <button
             type="button"
             onClick={handlePersistirManual}
             className="px-2.5 py-1.5 rounded-lg hover:bg-white/10 hover:text-[#E8A020] transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5"
-            title="Salvar alterações no banco de dados local (IndexedDB) e sincronizar com o Supabase na nuvem"
+            title="Salvar alterações diretamente no banco de dados Supabase"
           >
             <Save className="w-3.5 h-3.5 text-[#E8A020]" />
-            <span className="hidden xl:inline">Salvar no Banco</span>
+            <span className="hidden xl:inline">Salvar no Supabase</span>
             <span className="xl:hidden">Salvar</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleAbrirAuditoriaHidrogeologica(relatorioAtivo, false)}
+            className="px-2.5 py-1.5 rounded-lg bg-emerald-500/15 border border-emerald-400/40 text-emerald-300 hover:bg-emerald-500 hover:text-slate-950 transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 font-bold"
+            title="Executar Auditoria Técnica Normativa (NBR 12.212 / NBR 12.244) e Gerar Parecer Hidrogeológico (Jacob-Rorabaugh)"
+          >
+            <ShieldCheck className="w-3.5 h-3.5" />
+            <span>Auditar / Parecer</span>
           </button>
           <button
             type="button"
@@ -1417,28 +2542,132 @@ export default function App() {
         </div>
       </header>
 
-      {/* LAYOUT PRINCIPAL (Sidebar Colapsável no Desktop + Barra Horizontal Sticky no Mobile/Tablet + Main Content Fluido) */}
-      <div
-        className={`flex-1 grid grid-cols-1 ${
-          sidebarRetraida
-            ? 'lg:grid-cols-[68px_1fr]'
-            : 'lg:grid-cols-[235px_1fr]'
-        } min-h-[calc(100vh-56px)] sm:min-h-[calc(100vh-60px)] transition-all duration-200`}
-      >
-        {/* SIDEBAR DE SEÇÕES DO TRABALHO */}
-        <aside className="sticky top-14 sm:top-[60px] z-30 bg-[#243447] text-white py-2 px-3 lg:py-4 lg:px-0 lg:h-[calc(100vh-60px)] border-b border-white/10 lg:border-b-0 flex flex-col justify-between overflow-x-auto lg:overflow-y-auto print:hidden shadow-xs lg:shadow-none">
+      {/* LAYOUT PRINCIPAL (Sidebar Lateral Fixa a partir de md: 768px + Gaveta Lateral & Barra Rápida no Mobile) */}
+      <div className="flex-1 flex flex-col md:flex-row min-h-[calc(100vh-56px)] sm:min-h-[calc(100vh-60px)]">
+        {/* BACKDROP DO MENU LATERAL NO MOBILE (< 768px) */}
+        {sidebarMobileAberta && (
+          <div
+            onClick={() => setSidebarMobileAberta(false)}
+            className="fixed inset-0 z-40 bg-black/50 backdrop-blur-xs md:hidden print:hidden"
+          />
+        )}
+
+        {/* GAVETA VERTICAL DO MENU LATERAL NO MOBILE (< 768px) */}
+        {sidebarMobileAberta && (
+          <aside className="fixed top-14 sm:top-[60px] left-0 bottom-0 z-50 w-[250px] bg-[#243447] text-white py-4 flex flex-col justify-between overflow-y-auto shadow-2xl md:hidden print:hidden">
+            <div>
+              <div className="px-3.5 pb-4 border-b border-white/10">
+                <div className="flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-white/50 px-2 pb-2.5">
+                  <span>Módulos & Seções</span>
+                  <button
+                    type="button"
+                    onClick={() => setSidebarMobileAberta(false)}
+                    className="p-1 rounded hover:bg-white/10 text-white/70 hover:text-white"
+                    title="Fechar menu lateral"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex flex-col gap-1">
+                  {SECOES_SIDEBAR.map((item) => {
+                    const Icon = item.icon;
+                    const ativo = secaoAtiva === item.id;
+                    return (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setSecaoAtiva(item.id);
+                          setSidebarMobileAberta(false);
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className={`w-full flex items-center gap-2.5 px-3 py-2.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap ${
+                          ativo
+                            ? 'bg-[#E8A020] text-[#1B2A3B] shadow-xs'
+                            : 'text-white/80 hover:bg-white/10 hover:text-white'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 shrink-0" />
+                        <span>{item.label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+              <div className="px-3.5 py-3 border-b border-white/10 flex flex-col gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setModalHistoricoAberto(true);
+                    handleBuscarRelatoriosSupabase();
+                    setSidebarMobileAberta(false);
+                  }}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/15 text-white/90 flex items-center gap-2 whitespace-nowrap"
+                >
+                  <FolderOpen className="w-3.5 h-3.5 text-[#E8A020] shrink-0" />
+                  <span className="truncate">
+                    Histórico ({relatoriosSalvos.length})
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    handlePersistirManual();
+                    setSidebarMobileAberta(false);
+                  }}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/15 text-white/90 flex items-center gap-2 whitespace-nowrap"
+                >
+                  <Save className="w-3.5 h-3.5 text-[#E8A020] shrink-0" />
+                  <span className="truncate">Salvar no Supabase</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSidebarMobileAberta(false);
+                    handleAbrirModalReset();
+                  }}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-semibold bg-red-500/15 hover:bg-red-500/25 border border-red-400/30 text-red-200 flex items-center gap-2 whitespace-nowrap"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-red-300 shrink-0" />
+                  <span className="truncate">Zerar Banco (Reset)</span>
+                </button>
+              </div>
+            </div>
+            <div className="p-4 space-y-2">
+              <div className="flex items-center justify-between text-[11px] text-white/70">
+                <span>Preenchimento O.S.</span>
+                <span className="font-mono font-bold text-[#E8A020]">
+                  {progressoPct}%
+                </span>
+              </div>
+              <div className="h-1.5 w-full rounded-full bg-white/10 overflow-hidden">
+                <div
+                  className="h-full bg-[#E8A020] transition-all duration-300"
+                  style={{ width: `${progressoPct}%` }}
+                />
+              </div>
+            </div>
+          </aside>
+        )}
+
+        {/* SIDEBAR DE SEÇÕES DO TRABALHO (Vertical Lateral a partir de md: 768px | Barra Rápida no Mobile) */}
+        <aside
+          className={`sticky top-14 sm:top-[60px] z-30 bg-[#243447] text-white py-2 px-3 md:py-4 md:px-0 md:h-[calc(100vh-60px)] md:shrink-0 border-b border-white/10 md:border-b-0 md:border-r flex flex-col justify-between overflow-x-auto md:overflow-x-hidden md:overflow-y-auto print:hidden shadow-xs md:shadow-none transition-all duration-200 ${
+            sidebarRetraida ? 'md:w-[68px]' : 'md:w-[235px]'
+          }`}
+        >
           <div>
             <div
               className={`${
-                sidebarRetraida ? 'lg:px-2' : 'lg:px-3.5'
-              } lg:pb-4 lg:border-b lg:border-white/10`}
+                sidebarRetraida ? 'md:px-2' : 'md:px-3.5'
+              } md:pb-4 md:border-b md:border-white/10`}
             >
               {!sidebarRetraida && (
-                <div className="hidden lg:flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-white/40 px-2 pb-2.5">
+                <div className="hidden md:flex items-center justify-between text-[10px] font-bold uppercase tracking-wider text-white/40 px-2 pb-2.5">
                   <span>Módulos & Seções</span>
                 </div>
               )}
-              <div className="flex lg:flex-col gap-1.5 lg:gap-1 overflow-x-auto lg:overflow-x-visible no-scrollbar">
+              <div className="flex md:flex-col gap-1.5 md:gap-1 overflow-x-auto md:overflow-x-visible no-scrollbar">
                 {SECOES_SIDEBAR.map((item) => {
                   const Icon = item.icon;
                   const ativo = secaoAtiva === item.id;
@@ -1449,22 +2678,22 @@ export default function App() {
                       title={item.label}
                       onClick={() => {
                         setSecaoAtiva(item.id);
-                        if (window.innerWidth < 1024) {
+                        if (window.innerWidth < 768) {
                           window.scrollTo({ top: 0, behavior: 'smooth' });
                         }
                       }}
-                      className={`lg:w-full flex items-center ${
+                      className={`md:w-full flex items-center ${
                         sidebarRetraida
-                          ? 'lg:justify-center lg:px-2'
-                          : 'gap-2 lg:gap-2.5 px-3'
-                      } py-2 lg:py-2.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
+                          ? 'md:justify-center md:px-2'
+                          : 'gap-2 md:gap-2.5 px-3'
+                      } py-2 md:py-2.5 rounded-lg text-xs font-semibold transition-all whitespace-nowrap shrink-0 ${
                         ativo
                           ? 'bg-[#E8A020] text-[#1B2A3B] shadow-xs'
                           : 'text-white/75 hover:bg-white/10 hover:text-white'
                       }`}
                     >
                       <Icon className="w-4 h-4 shrink-0" />
-                      <span className={sidebarRetraida ? 'lg:hidden' : ''}>
+                      <span className={sidebarRetraida ? 'md:hidden' : ''}>
                         {item.label}
                       </span>
                     </button>
@@ -1473,17 +2702,20 @@ export default function App() {
               </div>
             </div>
 
-            {/* Ações rápidas (Desktop Sidebar) */}
+            {/* Ações rápidas (Desktop/Tablet Sidebar) */}
             {!sidebarRetraida && (
-              <div className="hidden lg:flex px-3.5 py-3 border-b border-white/10 flex-col gap-2">
+              <div className="hidden md:flex px-3.5 py-3 border-b border-white/10 flex-col gap-2">
                 <button
                   type="button"
-                  onClick={() => setModalHistoricoAberto(true)}
+                  onClick={() => {
+                    setModalHistoricoAberto(true);
+                    handleBuscarRelatoriosSupabase();
+                  }}
                   className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/15 text-white/90 flex items-center gap-2 whitespace-nowrap"
                 >
                   <FolderOpen className="w-3.5 h-3.5 text-[#E8A020] shrink-0" />
                   <span className="truncate">
-                    Histórico Salvos ({relatoriosSalvos.length})
+                    Histórico ({relatoriosSalvos.length})
                   </span>
                 </button>
                 <button
@@ -1492,15 +2724,24 @@ export default function App() {
                   className="w-full px-3 py-2 rounded-lg text-xs font-medium bg-white/10 hover:bg-white/15 text-white/90 flex items-center gap-2 whitespace-nowrap"
                 >
                   <Save className="w-3.5 h-3.5 text-[#E8A020] shrink-0" />
-                  <span className="truncate">Salvar</span>
+                  <span className="truncate">Salvar no Supabase</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAbrirModalReset}
+                  className="w-full px-3 py-2 rounded-lg text-xs font-semibold bg-red-500/15 hover:bg-red-500/25 border border-red-400/30 text-red-200 flex items-center gap-2 whitespace-nowrap transition-colors"
+                  title="Zerar Poços, Clientes e Relatórios no Supabase (mantém Templates intactos)"
+                >
+                  <RotateCcw className="w-3.5 h-3.5 text-red-300 shrink-0" />
+                  <span className="truncate">Zerar Banco (Reset)</span>
                 </button>
               </div>
             )}
           </div>
 
-          {/* Barra de Progresso do Relatório (Desktop Sidebar) */}
+          {/* Barra de Progresso do Relatório (Desktop/Tablet Sidebar) */}
           {!sidebarRetraida ? (
-            <div className="hidden lg:block p-4 space-y-2">
+            <div className="hidden md:block p-4 space-y-2">
               <div className="flex items-center justify-between text-[11px] text-white/70">
                 <span>Preenchimento O.S.</span>
                 <span className="font-mono font-bold text-[#E8A020]">
@@ -1515,14 +2756,14 @@ export default function App() {
               </div>
               <p className="text-[10px] text-white/45 font-mono truncate">
                 {salvandoAuto
-                  ? 'Sincronizando BLOB...'
+                  ? 'Salvando no Supabase...'
                   : horarioUltimoSave
-                  ? `Auto-save: ${horarioUltimoSave}`
-                  : 'IndexedDB Ativo'}
+                  ? `Supabase: ${horarioUltimoSave}`
+                  : 'Supabase Conectado'}
               </p>
             </div>
           ) : (
-            <div className="hidden lg:flex flex-col items-center p-2 pb-4 gap-1">
+            <div className="hidden md:flex flex-col items-center p-2 pb-4 gap-1">
               <span className="text-[10px] font-mono font-bold text-[#E8A020]">
                 {progressoPct}%
               </span>
@@ -1531,7 +2772,7 @@ export default function App() {
         </aside>
 
         {/* ÁREA PRINCIPAL DO SISTEMA (Fluida até 1680px para aproveitar toda a largura da tela) */}
-        <main className="p-4 sm:p-6 xl:p-8 min-w-0 max-w-[1680px] w-full mx-auto">
+        <main className="flex-1 min-w-0 p-4 sm:p-6 xl:p-8 max-w-[1680px] w-full mx-auto">
           {erroSistema && (
             <div className="mb-5 flex items-center justify-between gap-3 rounded-xl border border-red-300 bg-red-50 px-4 py-3 text-xs text-red-800">
               <div className="flex items-center gap-2">
@@ -1548,23 +2789,58 @@ export default function App() {
             </div>
           )}
 
+          {/* MÓDULO: CADASTRO DE CLIENTES & POÇOS POR CLIENTE */}
+          {secaoAtiva === 'cadastro_clientes' && (
+            <ClientesManager
+              clientes={clientesCadastrados}
+              pocos={pocosCadastrados}
+              relatorios={relatoriosSalvos}
+              onSalvarCliente={handleSalvarClienteNoBanco}
+              onExcluirCliente={handleExcluirClienteDoBanco}
+              onSalvarPoco={handleSalvarPocoNoBanco}
+              onIniciarNovaOSNoPoco={handleIniciarNovaOSNoPoco}
+              onAbrirProntuarioPoco={(poco) => {
+                setPocoProntuarioSelecionadoUuid(poco.uuid);
+                setSecaoAtiva('cadastro_pocos');
+              }}
+              onAbrirLancamentoRapido={handleAbrirLancamentoRapido}
+            />
+          )}
+
           {/* MÓDULO: CADASTRO DE POÇOS & HISTÓRICO POR POÇO */}
           {secaoAtiva === 'cadastro_pocos' && (
             <PocosManager
               pocos={pocosCadastrados}
+              clientes={clientesCadastrados}
+              pocoInicialSelecionadoUuid={pocoProntuarioSelecionadoUuid}
               relatorios={relatoriosSalvos}
               onSalvarPoco={handleSalvarPocoNoBanco}
               onExcluirPoco={handleExcluirPocoDoBanco}
+              onMesclarPocos={handleMesclarPocosNoBanco}
               onIniciarNovaOSNoPoco={handleIniciarNovaOSNoPoco}
               onAbrirRelatorio={(rel, preview) =>
                 handleCarregarDoHistorico(rel, false, preview)
               }
               onExportarPDFRelatorio={(rel) => handleExportarPDF(rel)}
+              onAbrirLancamentoRapido={handleAbrirLancamentoRapido}
+            />
+          )}
+
+          {/* MÓDULO: CONVERSOR & CONFERÊNCIA LADO A LADO DE PDFs EM LOTE */}
+          {secaoAtiva === 'conversor_lote' && (
+            <ConversorLotePDFSection
+              clientes={clientesCadastrados}
+              pocos={pocosCadastrados}
+              onImportarLoteOS={handleImportarLoteOS}
+              showToast={showToast}
             />
           )}
 
           {/* TIMBRE NA INTERFACE DO FORMULÁRIO (Parecis Perfuração de Poços e Sondagens Ltda) */}
-          {secaoAtiva !== 'preview' && secaoAtiva !== 'cadastro_pocos' && (
+          {secaoAtiva !== 'preview' &&
+            secaoAtiva !== 'cadastro_pocos' &&
+            secaoAtiva !== 'cadastro_clientes' &&
+            secaoAtiva !== 'conversor_lote' && (
             <div className="rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 mb-5 sm:mb-6 overflow-hidden shadow-xs">
               <div className="grid grid-cols-1 md:grid-cols-[290px_1fr] items-center">
                 {/* Coluna do Logo */}
@@ -1700,41 +2976,89 @@ export default function App() {
                 <h1 className="text-xl font-bold text-[#1B2A3B] dark:text-slate-100">
                   Identificação do Serviço
                 </h1>
-                <button
-                  type="button"
-                  onClick={() => setSecaoAtiva('cadastro_pocos')}
-                  className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-[#E8A020] flex items-center gap-1.5 self-start sm:self-auto"
-                >
-                  <Database className="w-3.5 h-3.5 text-[#E8A020]" />
-                  <span>Gerenciar Cadastro & Histórico por Poço</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto">
+                  <button
+                    type="button"
+                    onClick={() => setSecaoAtiva('cadastro_clientes')}
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-[#E8A020] flex items-center gap-1.5"
+                  >
+                    <Users className="w-3.5 h-3.5 text-[#E8A020]" />
+                    <span>Clientes ({clientesCadastrados.length})</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSecaoAtiva('cadastro_pocos')}
+                    className="px-3 py-1.5 text-xs font-bold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-[#E8A020] flex items-center gap-1.5"
+                  >
+                    <Database className="w-3.5 h-3.5 text-[#E8A020]" />
+                    <span>Gerenciar Cadastro & Histórico por Poço</span>
+                  </button>
+                </div>
               </div>
 
-              {/* Barra Rápida: Carregar Poço Cadastrado */}
-              <div className="rounded-xl border border-[#E8A020]/50 bg-[#FFFDF7] dark:bg-slate-900 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4">
+              {/* Barra Rápida: Selecionar Cliente -> Vincular Somente aos Poços daquele Cliente */}
+              <div className="rounded-xl border border-[#E8A020]/50 bg-[#FFFDF7] dark:bg-slate-900 p-4 space-y-3">
                 <div className="flex items-start gap-3">
                   <Droplets className="w-5 h-5 text-[#E8A020] shrink-0 mt-0.5" />
                   <div>
                     <div className="text-xs font-bold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-100">
-                      Vincular a um Poço
+                      Vincular Cliente & Poço Cadastrado
                     </div>
+                    <p className="text-[11px] text-[#6B7A8D] dark:text-slate-400">
+                      {clienteVinculadoAtivo
+                        ? `Exibindo somente os ${pocosFiltradosParaIdentificacao.length} poço(s) cadastrados para ${clienteVinculadoAtivo.razaoSocial}.`
+                        : 'Selecione um cliente para filtrar apenas os poços dele, ou escolha diretamente um poço.'}
+                    </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 w-full md:w-auto shrink-0">
-                  <select
-                    value={pocoVinculadoAtivo?.uuid || ''}
-                    onChange={(e) =>
-                      handleVincularPocoAoRelatorioAtivo(e.target.value)
-                    }
-                    className="w-full md:w-auto md:min-w-[260px] px-3 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
-                  >
-                    <option value="">— Selecionar poço cadastrado —</option>
-                    {pocosCadastrados.map((p) => (
-                      <option key={p.uuid} value={p.uuid}>
-                        {p.tag} — {p.nomeIdentificacao} ({p.cliente})
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B7A8D] mb-1">
+                      1. Cliente Cadastrado (Filtra os Poços)
+                    </label>
+                    <select
+                      value={clienteVinculadoAtivo?.uuid || ''}
+                      onChange={(e) =>
+                        handleSelecionarClienteNaIdentificacao(e.target.value)
+                      }
+                      className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                    >
+                      <option value="">
+                        — Todos os clientes ({clientesCadastrados.length}) —
                       </option>
-                    ))}
-                  </select>
+                      {clientesCadastrados.map((c) => (
+                        <option key={c.uuid} value={c.uuid}>
+                          {c.razaoSocial}
+                          {c.cnpjCpf ? ` (${c.cnpjCpf})` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold uppercase tracking-wider text-[#6B7A8D] mb-1">
+                      2. Poço do Cliente ({pocosFiltradosParaIdentificacao.length})
+                    </label>
+                    <select
+                      value={pocoVinculadoAtivo?.uuid || ''}
+                      onChange={(e) =>
+                        handleVincularPocoAoRelatorioAtivo(e.target.value)
+                      }
+                      className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                    >
+                      <option value="">
+                        — Selecionar poço{' '}
+                        {clienteVinculadoAtivo
+                          ? `de ${clienteVinculadoAtivo.razaoSocial}`
+                          : 'cadastrado'}{' '}
+                        —
+                      </option>
+                      {pocosFiltradosParaIdentificacao.map((p) => (
+                        <option key={p.uuid} value={p.uuid}>
+                          {p.tag} — {p.nomeIdentificacao} ({p.cliente})
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                 </div>
               </div>
 
@@ -1780,34 +3104,21 @@ export default function App() {
                       Tipo de Serviço
                     </label>
                     <select
-                      value={relatorioAtivo.cabecalho.tipoServico || ''}
+                      value={normalizarTipoServico(
+                        relatorioAtivo.cabecalho.tipoServico,
+                        ''
+                      )}
                       onChange={(e) =>
                         atualizarCabecalho('tipoServico', e.target.value)
                       }
                       className="w-full px-3 py-2.5 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
                     >
                       <option value="">Selecione…</option>
-                      <option value="Manutenção Preventiva">
-                        Manutenção Preventiva
-                      </option>
-                      <option value="Manutenção Corretiva">
-                        Manutenção Corretiva
-                      </option>
-                      <option value="Manutenção Conjunto-Motobomba">
-                        Manutenção Conjunto-Motobomba
-                      </option>
-                      <option value="Limpeza Completa de Poço">
-                        Limpeza Completa de Poço
-                      </option>
-                      <option value="Perfuração de Poço Tubular">
-                        Perfuração de Poço Tubular
-                      </option>
-                      <option value="Teste de Vazão / Bombeamento">
-                        Teste de Vazão / Bombeamento
-                      </option>
-                      <option value="Sondagem SPT / Geotecnia">
-                        Sondagem SPT / Geotecnia
-                      </option>
+                      {TIPOS_SERVICO_PADRAO.map((opcao) => (
+                        <option key={opcao} value={opcao}>
+                          {opcao}
+                        </option>
+                      ))}
                     </select>
                   </div>
 
@@ -2282,66 +3593,6 @@ export default function App() {
 
                   <div className="flex flex-col justify-between">
                     <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
-                      Crivo (Posição da Bomba)
-                    </label>
-                    <input
-                      type="text"
-                      value={relatorioAtivo.dadosPoco.crivo}
-                      onChange={(e) =>
-                        atualizarDadosPoco('crivo', e.target.value)
-                      }
-                      placeholder="Ex: 120m"
-                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-col justify-between">
-                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#B86E00] dark:text-[#E8A020] mb-1.5">
-                      Nível Estático — NE (Medição da O.S.)
-                    </label>
-                    <input
-                      type="text"
-                      value={relatorioAtivo.dadosPoco.nivelEstatico}
-                      onChange={(e) =>
-                        atualizarDadosPoco('nivelEstatico', e.target.value)
-                      }
-                      placeholder="Ex: 24,5m"
-                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#E8A020]/60 bg-[#FFFDF7] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-col justify-between">
-                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#B86E00] dark:text-[#E8A020] mb-1.5">
-                      Nível Dinâmico — ND (Medição da O.S.)
-                    </label>
-                    <input
-                      type="text"
-                      value={relatorioAtivo.dadosPoco.nivelDinamico}
-                      onChange={(e) =>
-                        atualizarDadosPoco('nivelDinamico', e.target.value)
-                      }
-                      placeholder="Ex: 52,0m"
-                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#E8A020]/60 bg-[#FFFDF7] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-col justify-between">
-                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#27AE60] mb-1.5">
-                      Vazão Mensurada (Medição da O.S.)
-                    </label>
-                    <input
-                      type="text"
-                      value={relatorioAtivo.dadosPoco.vazaoTeste}
-                      onChange={(e) =>
-                        atualizarDadosPoco('vazaoTeste', e.target.value)
-                      }
-                      placeholder="Ex: 16,5 m³/h"
-                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#27AE60]/50 bg-[#F4FBF7] dark:bg-slate-950 focus:bg-white focus:border-[#27AE60] focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-col justify-between">
-                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
                       Tubo Edutor
                     </label>
                     <input
@@ -2350,38 +3601,8 @@ export default function App() {
                       onChange={(e) =>
                         atualizarDadosPoco('tuboEdutor', e.target.value)
                       }
-                      placeholder="Ex: Geomecânico"
+                      placeholder="Ex: Geomecânico / CRI 1 1/2&quot;"
                       className="w-full px-3 py-2.5 text-sm rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-col justify-between">
-                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
-                      Eletrodo Superior
-                    </label>
-                    <input
-                      type="text"
-                      value={relatorioAtivo.dadosPoco.eletrodoSuperior}
-                      onChange={(e) =>
-                        atualizarDadosPoco('eletrodoSuperior', e.target.value)
-                      }
-                      placeholder="Ex: 45m"
-                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
-                    />
-                  </div>
-
-                  <div className="flex flex-col justify-between">
-                    <label className="block text-[11.5px] font-semibold uppercase tracking-wide text-[#6B7A8D] dark:text-slate-400 mb-1.5">
-                      Eletrodo Inferior
-                    </label>
-                    <input
-                      type="text"
-                      value={relatorioAtivo.dadosPoco.eletrodoInferior}
-                      onChange={(e) =>
-                        atualizarDadosPoco('eletrodoInferior', e.target.value)
-                      }
-                      placeholder="Ex: 50m"
-                      className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
                     />
                   </div>
 
@@ -2419,6 +3640,358 @@ export default function App() {
                       placeholder="Ex: X=241500, Y=8624000"
                       className="w-full px-3 py-2.5 text-sm font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
                     />
+                  </div>
+
+                  <div className="sm:col-span-2 pt-1">
+                    <DetectorAquiferoCard
+                      value={relatorioAtivo.dadosPoco.aquiferoLitologia || ''}
+                      onChange={(novoValor) =>
+                        atualizarDadosPoco('aquiferoLitologia', novoValor)
+                      }
+                      coordenadasGeograficas={
+                        relatorioAtivo.dadosPoco.coordenadasGeograficas ||
+                        relatorioAtivo.cabecalho.coordenadasGeograficas
+                      }
+                      coordenadasUTM={relatorioAtivo.dadosPoco.coordenadasUTM}
+                      cidadeUF={relatorioAtivo.cabecalho.cidadeUF}
+                      endereco={relatorioAtivo.cabecalho.localizacao}
+                      pocosSupabase={pocosCadastrados}
+                      relatoriosSupabase={relatoriosSalvos}
+                      pocoIgnorarUuid={relatorioAtivo.pocoUuid}
+                      onNotificar={(msg, tipo) =>
+                        showToast(msg, tipo === 'error' ? 'error' : 'success')
+                      }
+                    />
+                  </div>
+                </div>
+
+                {/* Quadro Comparativo do Carimbo de Campo: INICIAL (Antes) vs FINAL (Depois da Manutenção) */}
+                <div className="rounded-xl border-2 border-[#E8A020]/45 bg-[#FFFDF7] dark:bg-slate-950/80 p-4 space-y-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#E8A020]/30 pb-3">
+                    <div>
+                      <div className="text-xs font-extrabold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-100 flex items-center gap-2">
+                        <span className="inline-block w-2 h-2 rounded-full bg-[#E8A020]" />
+                        Medições do Carimbo de Campo: Inicial (Antes) vs. Final (Pós-Manutenção)
+                      </div>
+                      <p className="text-[11.5px] text-[#6B7A8D] dark:text-slate-400 mt-0.5">
+                        Registre os valores iniciais (frente da O.S. / coluna ANTES do carimbo) e os valores finais aferidos após a finalização da manutenção (coluna DEPOIS).
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRelatorioAtivo((prev) => ({
+                          ...prev,
+                          dadosPoco: {
+                            ...prev.dadosPoco,
+                            nivelEstatico:
+                              prev.dadosPoco.nivelEstatico ||
+                              prev.dadosPoco.nivelEstaticoInicial ||
+                              '',
+                            nivelDinamico:
+                              prev.dadosPoco.nivelDinamico ||
+                              prev.dadosPoco.nivelDinamicoInicial ||
+                              '',
+                            vazaoTeste:
+                              prev.dadosPoco.vazaoTeste ||
+                              prev.dadosPoco.vazaoInicial ||
+                              '',
+                            crivo:
+                              prev.dadosPoco.crivo ||
+                              prev.dadosPoco.crivoInicial ||
+                              '',
+                            eletrodoSuperior:
+                              prev.dadosPoco.eletrodoSuperior ||
+                              prev.dadosPoco.eletrodoSuperiorInicial ||
+                              '',
+                            eletrodoInferior:
+                              prev.dadosPoco.eletrodoInferior ||
+                              prev.dadosPoco.eletrodoInferiorInicial ||
+                              '',
+                            nivelEstaticoInicial:
+                              prev.dadosPoco.nivelEstaticoInicial ||
+                              prev.dadosPoco.nivelEstatico ||
+                              '',
+                            nivelDinamicoInicial:
+                              prev.dadosPoco.nivelDinamicoInicial ||
+                              prev.dadosPoco.nivelDinamico ||
+                              '',
+                            vazaoInicial:
+                              prev.dadosPoco.vazaoInicial ||
+                              prev.dadosPoco.vazaoTeste ||
+                              '',
+                            crivoInicial:
+                              prev.dadosPoco.crivoInicial ||
+                              prev.dadosPoco.crivo ||
+                              '',
+                            eletrodoSuperiorInicial:
+                              prev.dadosPoco.eletrodoSuperiorInicial ||
+                              prev.dadosPoco.eletrodoSuperior ||
+                              '',
+                            eletrodoInferiorInicial:
+                              prev.dadosPoco.eletrodoInferiorInicial ||
+                              prev.dadosPoco.eletrodoInferior ||
+                              '',
+                          },
+                        }));
+                        showToast(
+                          'Valores sincronizados entre Inicial (Antes) e Final (Depois)!',
+                          'success'
+                        );
+                      }}
+                      className="px-3 py-1.5 text-[11px] font-bold rounded-lg border border-[#E8A020] bg-white dark:bg-slate-900 text-[#B86E00] dark:text-[#E8A020] hover:bg-[#E8A020]/15 transition-colors shrink-0 self-start sm:self-auto"
+                      title="Preenche automaticamente os campos em branco copiando entre Inicial e Final"
+                    >
+                      Sincronizar Inicial ↔ Final
+                    </button>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* 1. Nível Estático (NE) */}
+                    <div className="rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#B86E00] dark:text-[#E8A020]">
+                        1. Nível Estático — NE (m)
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10.5px] font-semibold uppercase text-[#6B7A8D] dark:text-slate-400 mb-1">
+                            Inicial / Antes da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.nivelEstaticoInicial || ''}
+                            onChange={(e) =>
+                              atualizarDadosPoco(
+                                'nivelEstaticoInicial',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Ex: 24,50 m (Antes)"
+                            className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10.5px] font-bold uppercase text-[#B86E00] dark:text-[#E8A020] mb-1">
+                            Final / Depois da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.nivelEstatico}
+                            onChange={(e) =>
+                              atualizarDadosPoco('nivelEstatico', e.target.value)
+                            }
+                            placeholder="Ex: 22,40 m (Depois)"
+                            className="w-full px-2.5 py-2 text-xs font-mono font-semibold rounded-lg border border-[#E8A020]/70 bg-[#FFFDF7] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 2. Nível Dinâmico (ND) */}
+                    <div className="rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#B86E00] dark:text-[#E8A020]">
+                        2. Nível Dinâmico — ND (m)
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10.5px] font-semibold uppercase text-[#6B7A8D] dark:text-slate-400 mb-1">
+                            Inicial / Antes da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.nivelDinamicoInicial || ''}
+                            onChange={(e) =>
+                              atualizarDadosPoco(
+                                'nivelDinamicoInicial',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Ex: 68,00 m (Antes)"
+                            className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10.5px] font-bold uppercase text-[#B86E00] dark:text-[#E8A020] mb-1">
+                            Final / Depois da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.nivelDinamico}
+                            onChange={(e) =>
+                              atualizarDadosPoco('nivelDinamico', e.target.value)
+                            }
+                            placeholder="Ex: 64,10 m (Depois)"
+                            className="w-full px-2.5 py-2 text-xs font-mono font-semibold rounded-lg border border-[#E8A020]/70 bg-[#FFFDF7] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 3. Vazão Mensurada (Q) */}
+                    <div className="rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#27AE60]">
+                        3. Vazão Mensurada — Q (m³/h ou L/h)
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10.5px] font-semibold uppercase text-[#6B7A8D] dark:text-slate-400 mb-1">
+                            Inicial / Antes da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.vazaoInicial || ''}
+                            onChange={(e) =>
+                              atualizarDadosPoco('vazaoInicial', e.target.value)
+                            }
+                            placeholder="Ex: 8,50 m³/h (Antes)"
+                            className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#27AE60] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10.5px] font-bold uppercase text-[#27AE60] mb-1">
+                            Final / Depois da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.vazaoTeste}
+                            onChange={(e) =>
+                              atualizarDadosPoco('vazaoTeste', e.target.value)
+                            }
+                            placeholder="Ex: 10,29 m³/h (Depois)"
+                            className="w-full px-2.5 py-2 text-xs font-mono font-semibold rounded-lg border border-[#27AE60]/60 bg-[#F4FBF7] dark:bg-slate-950 focus:bg-white focus:border-[#27AE60] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 4. Crivo / Posição do Filtro */}
+                    <div className="rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
+                        4. Crivo / Posição da Bomba (m)
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10.5px] font-semibold uppercase text-[#6B7A8D] dark:text-slate-400 mb-1">
+                            Inicial / Antes da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.crivoInicial || ''}
+                            onChange={(e) =>
+                              atualizarDadosPoco('crivoInicial', e.target.value)
+                            }
+                            placeholder="Ex: 120,00 m (Antes)"
+                            className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10.5px] font-bold uppercase text-[#1B2A3B] dark:text-slate-200 mb-1">
+                            Final / Depois da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.crivo}
+                            onChange={(e) =>
+                              atualizarDadosPoco('crivo', e.target.value)
+                            }
+                            placeholder="Ex: 120,00 m (Depois)"
+                            className="w-full px-2.5 py-2 text-xs font-mono font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 5. Eletrodo Superior (ES) */}
+                    <div className="rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
+                        5. Eletrodo Superior — ES
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10.5px] font-semibold uppercase text-[#6B7A8D] dark:text-slate-400 mb-1">
+                            Inicial / Antes da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={
+                              relatorioAtivo.dadosPoco.eletrodoSuperiorInicial ||
+                              ''
+                            }
+                            onChange={(e) =>
+                              atualizarDadosPoco(
+                                'eletrodoSuperiorInicial',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Ex: 45,00 m (Antes)"
+                            className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10.5px] font-bold uppercase text-[#1B2A3B] dark:text-slate-200 mb-1">
+                            Final / Depois da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.eletrodoSuperior}
+                            onChange={(e) =>
+                              atualizarDadosPoco(
+                                'eletrodoSuperior',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Ex: 45,00 m (Depois)"
+                            className="w-full px-2.5 py-2 text-xs font-mono font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 6. Eletrodo Inferior (EI) */}
+                    <div className="rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-white dark:bg-slate-900 p-3 space-y-2">
+                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[#1B2A3B] dark:text-slate-200">
+                        6. Eletrodo Inferior — EI
+                      </div>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10.5px] font-semibold uppercase text-[#6B7A8D] dark:text-slate-400 mb-1">
+                            Inicial / Antes da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={
+                              relatorioAtivo.dadosPoco.eletrodoInferiorInicial ||
+                              ''
+                            }
+                            onChange={(e) =>
+                              atualizarDadosPoco(
+                                'eletrodoInferiorInicial',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Ex: 50,00 m (Antes)"
+                            className="w-full px-2.5 py-2 text-xs font-mono rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 focus:bg-white focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-[10.5px] font-bold uppercase text-[#1B2A3B] dark:text-slate-200 mb-1">
+                            Final / Depois da Manutenção
+                          </label>
+                          <input
+                            type="text"
+                            value={relatorioAtivo.dadosPoco.eletrodoInferior}
+                            onChange={(e) =>
+                              atualizarDadosPoco(
+                                'eletrodoInferior',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Ex: 50,00 m (Depois)"
+                            className="w-full px-2.5 py-2 text-xs font-mono font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-950 focus:border-[#E8A020] focus:outline-none"
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -2532,6 +4105,54 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {/* Card: Dimensionamento Hidráulico e Elétrico da Motobomba + Banco de Modelos */}
+              <DimensionamentoBombaSection
+                dadosPoco={relatorioAtivo.dadosPoco}
+                onChangeDimensionamento={(novoDim) =>
+                  atualizarDadosPoco('dimensionamentoBomba', novoDim)
+                }
+                onAplicarBombaSelecionada={({
+                  especificacaoBomba,
+                  painelEletrico,
+                  tuboEdutor,
+                  modeloId,
+                }) => {
+                  setRelatorioAtivo((prev) => ({
+                    ...prev,
+                    dadosPoco: {
+                      ...prev.dadosPoco,
+                      especificacaoBomba,
+                      painelEletrico,
+                      tuboEdutor: tuboEdutor || prev.dadosPoco.tuboEdutor,
+                      dimensionamentoBomba: {
+                        ...(prev.dadosPoco.dimensionamentoBomba || {
+                          ativo: true,
+                          diametroEdutorPol: '1.1/2"',
+                          materialEdutor: 'Galvanizado (C=120)',
+                          desnivelExternoM: '15,00',
+                          distanciaAdutoraM: '50,00',
+                          diametroAdutoraMm: '50',
+                          materialAdutora: 'PEAD / PVC (C=140)',
+                          pressaoResidualMca: '3,00',
+                          perdasLocalizadasPercent: '8',
+                          rendimentoBombaPercent: '58',
+                          tensaoAlimentacao: '220V Trifásico',
+                          distanciaQuadroBocaM: '10,00',
+                          quedaTensaoMaxPercent: '3,5',
+                        }),
+                        ativo: true,
+                        modeloSelecionadoId: modeloId,
+                      },
+                    },
+                  }));
+                  showToast(
+                    'Conjunto motobomba, quadro de comando e cabo PP aplicados ao relatório!',
+                    'success'
+                  );
+                }}
+                showToast={showToast}
+              />
 
               {/* Card: Teste de Vazão Padrão SEMA (Step-Drawdown Test & Grupo Geoeste) */}
               <StepDrawdownSection
@@ -3058,44 +4679,44 @@ export default function App() {
                 <input
                   ref={inputFotosRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.jpg,.jpeg,.png,.webp,.heic,.heif,.bmp"
                   multiple
                   onChange={handleSelecionarFotos}
                   className="hidden"
                 />
-                <input
-                  ref={inputCameraRef}
-                  type="file"
-                  accept="image/*"
-                  capture="environment"
-                  onChange={handleSelecionarFotos}
-                  className="hidden"
-                />
 
-                {/* Zona de Upload Clicável */}
+                {/* Zona de Upload Clicável / Drag-and-Drop / Colar (Ctrl+V) */}
                 <div
+                  tabIndex={0}
                   onClick={() => inputFotosRef.current?.click()}
-                  className="border-2 border-dashed border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] rounded-xl p-5 sm:p-7 text-center cursor-pointer bg-[#F7F9FC] dark:bg-slate-950 hover:bg-white dark:hover:bg-slate-900 transition-all space-y-2"
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                      processarArquivosFotos(e.dataTransfer.files);
+                    }
+                  }}
+                  onPaste={(e) => {
+                    const items = e.clipboardData?.files;
+                    if (items && items.length > 0) {
+                      e.preventDefault();
+                      processarArquivosFotos(items);
+                    }
+                  }}
+                  className="border-2 border-dashed border-[#DDE3EC] dark:border-slate-700 hover:border-[#E8A020] focus:border-[#E8A020] focus:outline-none rounded-xl p-5 sm:p-7 text-center cursor-pointer bg-[#F7F9FC] dark:bg-slate-950 hover:bg-white dark:hover:bg-slate-900 transition-all space-y-2"
                 >
-                  <Camera className="w-8 h-8 text-[#E8A020] mx-auto" />
+                  <ImageIcon className="w-8 h-8 text-[#E8A020] mx-auto" />
                   <div className="text-sm font-bold text-[#1B2A3B] dark:text-slate-100">
-                    Clique para adicionar evidência fotográfica
+                    Clique, arraste ou cole (Ctrl+V) para adicionar evidência fotográfica
                   </div>
                   <div className="text-xs text-[#6B7A8D] dark:text-slate-400">
-                    Permite enquadrar na proporção 1:1, aplicar zoom/rotação e definir a legenda técnica
+                    Permite enquadrar na proporção 1:1, aplicar zoom/rotação e definir a legenda técnica (JPG, PNG, WebP)
                   </div>
                   <div className="pt-2 flex flex-wrap items-center justify-center gap-2.5 sm:gap-3">
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        inputCameraRef.current?.click();
-                      }}
-                      className="px-3.5 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900 hover:border-[#E8A020] flex items-center gap-1.5"
-                    >
-                      <Camera className="w-3.5 h-3.5 text-[#E8A020]" />
-                      Usar Câmera Mobile
-                    </button>
                     <button
                       type="button"
                       onClick={(e) => {
@@ -3105,7 +4726,7 @@ export default function App() {
                       className="px-3.5 py-2 text-xs font-bold rounded-lg bg-[#E8A020] text-[#1B2A3B] hover:bg-[#F5B93A] flex items-center gap-1.5"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      Escolher da Galeria
+                      Escolher da Galeria / Arquivos
                     </button>
                   </div>
                 </div>
@@ -3396,7 +5017,7 @@ export default function App() {
         </main>
       </div>
 
-      {/* MODAL DE HISTÓRICO GERAL / RELATÓRIOS SALVOS NO NAVEGADOR */}
+      {/* MODAL DE HISTÓRICO GERAL / RELATÓRIOS SALVOS NO SUPABASE */}
       {modalHistoricoAberto &&
         (() => {
           const normalizarTexto = (txt: string) =>
@@ -3407,7 +5028,7 @@ export default function App() {
 
           const termoNormalizado = normalizarTexto(buscaHistorico.trim());
 
-          const listaOrigem = abaHistorico === 'supabase' ? relatoriosSupabase : relatoriosSalvos;
+          const listaOrigem = relatoriosSalvos;
 
           const relatoriosHistoricoFiltrados = listaOrigem.filter((rel) => {
             const statusItem = rel.cabecalho.statusOS || 'Concluído';
@@ -3441,54 +5062,42 @@ export default function App() {
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#DDE3EC] dark:border-slate-800 pb-4 mb-4 shrink-0">
                   <div className="min-w-0">
                     <h3 className="text-sm sm:text-base font-bold text-[#1B2A3B] dark:text-slate-100 truncate flex items-center gap-2">
-                      <FolderOpen className="w-4 h-4 text-[#E8A020]" />
-                      <span>Histórico de Relatórios Técnicos</span>
+                      <Cloud className="w-4 h-4 text-emerald-500" />
+                      <span>Histórico de Relatórios — Supabase</span>
                     </h3>
                     <p className="text-[11px] sm:text-xs text-[#6B7A8D] dark:text-slate-400 font-mono tabular-nums mt-0.5">
                       Exibindo {relatoriosHistoricoFiltrados.length} de{' '}
-                      {listaOrigem.length} relatório(s) ({abaHistorico === 'supabase' ? 'Nuvem Supabase' : 'Armazenamento Local'})
+                      {listaOrigem.length} relatório(s) salvos na nuvem Supabase
                     </p>
                   </div>
 
-                  {/* Alternador de Origem: IndexedDB Local vs Supabase */}
-                  <div className="flex items-center gap-2 shrink-0">
-                    <div className="flex items-center p-1 rounded-xl bg-slate-100 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 text-xs font-semibold">
-                      <button
-                        type="button"
-                        onClick={() => setAbaHistorico('local')}
-                        className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                          abaHistorico === 'local'
-                            ? 'bg-white dark:bg-slate-900 text-[#1B2A3B] dark:text-white shadow-xs'
-                            : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                        }`}
-                      >
-                        <Database className="w-3.5 h-3.5 text-[#E8A020]" />
-                        <span>Navegador ({relatoriosSalvos.length})</span>
-                      </button>
+                  <div className="flex items-center gap-2 shrink-0 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={handleBuscarRelatoriosSupabase}
+                      disabled={carregandoSupabase}
+                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-emerald-200 dark:border-emerald-800 bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300 hover:bg-emerald-100 flex items-center gap-1.5 whitespace-nowrap"
+                    >
+                      <Cloud className="w-3.5 h-3.5" />
+                      <span>
+                        {carregandoSupabase ? 'Atualizando...' : 'Atualizar'}
+                      </span>
+                    </button>
 
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setAbaHistorico('supabase');
-                          handleBuscarRelatoriosSupabase();
-                        }}
-                        className={`px-3 py-1.5 rounded-lg transition-all flex items-center gap-1.5 ${
-                          abaHistorico === 'supabase'
-                            ? 'bg-white dark:bg-slate-900 text-emerald-600 dark:text-emerald-400 shadow-xs'
-                            : 'text-slate-500 hover:text-slate-900 dark:hover:text-white'
-                        }`}
-                      >
-                        <Cloud className="w-3.5 h-3.5" />
-                        <span>
-                          {carregandoSupabase ? 'Carregando...' : `Supabase (${relatoriosSupabase.length})`}
-                        </span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      onClick={handleAbrirModalReset}
+                      className="px-3 py-1.5 text-xs font-bold rounded-lg border border-red-300 dark:border-red-800 bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-100 dark:hover:bg-red-900/50 flex items-center gap-1.5 whitespace-nowrap"
+                      title="Apagar Poços, Clientes e Relatórios no Supabase e iniciar do zero (mantém Templates)"
+                    >
+                      <RotateCcw className="w-3.5 h-3.5" />
+                      <span>Zerar Banco</span>
+                    </button>
 
                     <button
                       type="button"
                       onClick={() => setModalHistoricoAberto(false)}
-                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-red-200 text-red-600 hover:bg-red-50 flex items-center gap-1 whitespace-nowrap shrink-0"
+                      className="px-3 py-1.5 text-xs font-semibold rounded-lg border border-slate-200 dark:border-slate-700 text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800 flex items-center gap-1 whitespace-nowrap shrink-0"
                     >
                       <span>Fechar</span>
                       <X className="w-3.5 h-3.5" />
@@ -3552,14 +5161,10 @@ export default function App() {
                   {listaOrigem.length === 0 ? (
                     <div className="text-center py-12 space-y-2">
                       <p className="text-sm font-semibold text-[#1B2A3B] dark:text-slate-200">
-                        {abaHistorico === 'supabase'
-                          ? 'Nenhum relatório encontrado na nuvem do Supabase ainda.'
-                          : 'Nenhum relatório salvo encontrado neste navegador.'}
+                        Nenhum relatório cadastrado no Supabase ainda.
                       </p>
                       <p className="text-xs text-[#6B7A8D] dark:text-slate-400">
-                        {abaHistorico === 'supabase'
-                          ? 'Ao clicar em "Salvar no Banco", os relatórios sincronizam automaticamente com a nuvem.'
-                          : 'Os relatórios salvos localmente aparecem nesta aba.'}
+                        Preencha uma nova Ordem de Serviço e clique em &ldquo;Salvar no Supabase&rdquo; para começar.
                       </p>
                     </div>
                   ) : relatoriosHistoricoFiltrados.length === 0 ? (
@@ -3665,7 +5270,7 @@ export default function App() {
                                       handleExcluirDoHistorico(rel.uuid)
                                     }
                                     className="p-1.5 rounded border border-red-200 text-red-600 hover:bg-red-50"
-                                    title="Excluir"
+                                    title="Excluir do Supabase"
                                   >
                                     <Trash2 className="w-3.5 h-3.5" />
                                   </button>
@@ -3683,6 +5288,218 @@ export default function App() {
           );
         })()}
 
+      {/* MODAL PROTEGIDO DE RESET TOTAL DO BANCO SUPABASE (PRESERVA TEMPLATES) */}
+      {modalResetAberto && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-3 sm:p-4 backdrop-blur-xs">
+          <div className="w-full max-w-2xl max-h-[92vh] overflow-y-auto rounded-2xl bg-white dark:bg-slate-900 border border-red-300 dark:border-red-900 p-5 sm:p-6 shadow-2xl space-y-4">
+            <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2.5 rounded-xl bg-red-100 dark:bg-red-950/60 text-red-600 dark:text-red-400">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-[#1B2A3B] dark:text-slate-100">
+                    Zerar Banco de Dados (Iniciar do Zero)
+                  </h3>
+                  <p className="text-xs text-[#6B7A8D] dark:text-slate-400">
+                    Diagnóstico das tabelas e limpeza operacional no Supabase
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={executandoReset}
+                onClick={() => setModalResetAberto(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            {/* Diagnóstico em tempo real das tabelas do Supabase */}
+            <div className="rounded-xl border border-[#DDE3EC] dark:border-slate-800 bg-[#F7F9FC] dark:bg-slate-950/70 p-3.5 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Database className="w-4 h-4 text-[#E8A020]" />
+                  <span className="text-xs font-bold text-[#1B2A3B] dark:text-slate-100">
+                    Status das Tabelas no Supabase
+                  </span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={verificandoTabelas}
+                    onClick={handleVerificarTabelasSupabase}
+                    className="px-2.5 py-1 text-[11px] font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-white dark:bg-slate-900 text-[#1B2A3B] dark:text-slate-200 hover:border-[#E8A020] transition-colors flex items-center gap-1"
+                  >
+                    <RotateCcw
+                      className={`w-3 h-3 ${
+                        verificandoTabelas ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>
+                      {verificandoTabelas ? 'Verificando...' : 'Reverificar'}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMostrarSqlSupabase((prev) => !prev)}
+                    className="px-2.5 py-1 text-[11px] font-bold rounded-lg border border-sky-300 dark:border-sky-800 bg-sky-50 dark:bg-sky-950/40 text-sky-800 dark:text-sky-300 hover:bg-sky-100 transition-colors flex items-center gap-1"
+                  >
+                    <Cloud className="w-3 h-3" />
+                    <span>
+                      {mostrarSqlSupabase
+                        ? 'Ocultar SQL'
+                        : 'SQL das Tabelas'}
+                    </span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {statusTabelasSupabase.map((item) => (
+                  <div
+                    key={item.tabela}
+                    className={`rounded-lg border px-2.5 py-2 text-[11px] ${
+                      item.existe && !item.erro
+                        ? 'border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/30'
+                        : 'border-amber-300 dark:border-amber-800 bg-amber-50/80 dark:bg-amber-950/30'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1 font-bold text-[#1B2A3B] dark:text-slate-100">
+                      <span className="truncate">{item.label}</span>
+                      {item.existe && !item.erro ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400 shrink-0" />
+                      ) : (
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400 shrink-0" />
+                      )}
+                    </div>
+                    <div className="mt-0.5 text-[10px] font-mono text-[#6B7A8D] dark:text-slate-400 truncate">
+                      {item.existe && !item.erro
+                        ? `${item.contagem ?? 0} reg.${
+                            item.preservadaNoReset ? ' · preservada' : ''
+                          }`
+                        : 'Ausente / criar'}
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {mostrarSqlSupabase && (
+                <div className="pt-2 border-t border-[#DDE3EC] dark:border-slate-800 space-y-2">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <p className="text-[11px] text-[#4A5568] dark:text-slate-300 leading-relaxed">
+                      Cole o SQL abaixo no <strong>SQL Editor</strong> do seu
+                      painel Supabase e clique em <strong>Run</strong> (cria as
+                      tabelas ausentes sem apagar seus dados/templates), depois
+                      clique em <strong>Reverificar</strong>.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleCopiarSqlSupabase}
+                      className="px-3 py-1.5 text-[11px] font-bold rounded-lg bg-[#1B2A3B] hover:bg-[#25394e] text-white flex items-center gap-1.5 shrink-0 self-start sm:self-auto"
+                    >
+                      {sqlCopiado ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span>SQL Copiado!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-[#E8A020]" />
+                          <span>Copiar SQL Completo</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+                  <pre className="p-3 rounded-lg bg-slate-950 text-slate-200 text-[10.5px] font-mono max-h-48 overflow-auto whitespace-pre leading-relaxed select-all border border-slate-800">
+                    {SQL_COMPLETO_TABELAS_SUPABASE}
+                  </pre>
+                </div>
+              )}
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div className="rounded-xl border border-red-200 dark:border-red-900/60 bg-red-50/70 dark:bg-red-950/30 p-3.5 space-y-1.5">
+                <div className="font-bold text-red-700 dark:text-red-300 uppercase tracking-wide text-[10px]">
+                  Será Apagado Permanentemente
+                </div>
+                <ul className="space-y-1 text-red-800 dark:text-red-200/90">
+                  <li>• Relatórios Técnicos ({relatoriosSalvos.length})</li>
+                  <li>• Poços Cadastrados ({pocosCadastrados.length})</li>
+                  <li>• Clientes ({clientesCadastrados.length})</li>
+                  <li>• Banco local legado (IndexedDB)</li>
+                </ul>
+              </div>
+
+              <div className="rounded-xl border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/70 dark:bg-emerald-950/30 p-3.5 space-y-1.5">
+                <div className="font-bold text-emerald-700 dark:text-emerald-300 uppercase tracking-wide text-[10px]">
+                  Será Mantido Intacto
+                </div>
+                <ul className="space-y-1 text-emerald-800 dark:text-emerald-200/90">
+                  <li>• Templates de Memorial ({listaTemplates.length})</li>
+                  <li>• Cabeçalho Parecis / Grupo Geoeste</li>
+                  <li>• Logotipo institucional padrão</li>
+                </ul>
+              </div>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-[#1B2A3B] dark:text-slate-200">
+                Para confirmar, digite{' '}
+                <span className="font-mono font-extrabold text-red-600 dark:text-red-400">
+                  ZERAR
+                </span>{' '}
+                no campo abaixo:
+              </label>
+              <input
+                type="text"
+                value={confirmacaoTextoReset}
+                onChange={(e) => setConfirmacaoTextoReset(e.target.value)}
+                placeholder="Digite ZERAR"
+                disabled={executandoReset}
+                autoFocus
+                className="w-full px-3.5 py-2.5 text-sm font-mono uppercase rounded-lg border border-[#DDE3EC] dark:border-slate-700 bg-[#F7F9FC] dark:bg-slate-950 text-[#1B2A3B] dark:text-slate-100 focus:border-red-500 focus:outline-none"
+              />
+            </div>
+
+            {erroReset && (
+              <div className="rounded-lg border border-red-300 bg-red-50 dark:bg-red-950/50 px-3 py-2.5 text-xs text-red-700 dark:text-red-300 flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 shrink-0 mt-0.5" />
+                <span>{erroReset}</span>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2.5 pt-2">
+              <button
+                type="button"
+                disabled={executandoReset}
+                onClick={() => setModalResetAberto(false)}
+                className="px-4 py-2 text-xs font-semibold rounded-lg border border-[#DDE3EC] dark:border-slate-700 text-slate-700 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-slate-800"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={
+                  executandoReset ||
+                  confirmacaoTextoReset.trim().toUpperCase() !== 'ZERAR'
+                }
+                onClick={handleConfirmarResetTotal}
+                className="px-4 py-2 text-xs font-bold rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-40 disabled:cursor-not-allowed text-white flex items-center gap-1.5 transition-colors"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>
+                  {executandoReset
+                    ? 'Zerando Supabase...'
+                    : 'Confirmar Reset Total'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL CONFIRMAR NOVO RELATÓRIO */}
       {modalNovoRelatorioAberto && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-xs">
@@ -3693,7 +5510,7 @@ export default function App() {
             </h3>
             <p className="text-sm text-[#6B7A8D] dark:text-slate-400">
               Isso criará um novo formulário limpo mantendo o relatório anterior
-              salvo no Histórico. Confirmar?
+              salvo no Histórico (Supabase). Confirmar?
             </p>
             <div className="flex justify-end gap-3 pt-2">
               <button
@@ -3734,7 +5551,10 @@ export default function App() {
         onSalvarTemplate={handleSalvarTemplateCustom}
         onExcluirTemplate={handleExcluirTemplateCustom}
         onAplicarTemplate={aplicarTemplateDescricao}
-        onRecarregarTemplates={() => setListaTemplates(obterTodosTemplates())}
+        onRecarregarTemplates={async () => {
+          const atualizados = await carregarTodosTemplatesSupabase();
+          setListaTemplates(atualizados);
+        }}
         showToast={showToast}
       />
 
@@ -3744,6 +5564,35 @@ export default function App() {
         onClose={() => setModalImportarOSAberta(false)}
         onAplicarDados={handleAplicarDadosOSCampo}
         showToast={showToast}
+      />
+
+      {/* CENTRAL DE LANÇAMENTO RÁPIDO DE HISTÓRICO (PDF EM LOTE + EXCEL/CSV + GRADE RÁPIDA) */}
+      <ModalLancamentoRapidoHistorico
+        isOpen={modalLancamentoRapidoAberta}
+        onClose={() => setModalLancamentoRapidoAberta(false)}
+        clientes={clientesCadastrados}
+        pocos={pocosCadastrados}
+        clienteInicialUuid={filtroLancamentoRapido.clienteUuid}
+        pocoInicialUuid={filtroLancamentoRapido.pocoUuid}
+        onImportarLoteOS={handleImportarLoteOS}
+        showToast={showToast}
+      />
+
+      {/* MODAL DE AUDITORIA TÉCNICA E PARECER HIDROGEOLÓGICO (ABNT NBR 12.212 / 12.244) */}
+      <ModalAuditoriaHidrogeologica
+        isOpen={modalAuditoriaAberta}
+        onClose={() => setModalAuditoriaAberta(false)}
+        resultado={resultadoAuditoria}
+        carregandoIA={carregandoAuditoriaIA}
+        modoBloqueioExportacao={modoBloqueioExportacao}
+        onExecutarAuditoriaIA={handleExecutarAuditoriaParecerIA}
+        onAplicarSecoesNoRelatorio={handleAplicarSecoesAuditoriaNoRelatorio}
+        onForcarExportacaoPDF={() =>
+          executarExportacaoPDFDireta(
+            relatorioPendenteExportacao || relatorioAtivo
+          )
+        }
+        onIrParaSecao={(sec) => setSecaoAtiva(sec)}
       />
 
       {/* TOAST FLUTUANTE */}

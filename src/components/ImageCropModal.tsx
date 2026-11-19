@@ -71,6 +71,32 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
     img.src = itemAtual.dataUrlOriginal;
   }, [itemAtual]);
 
+  const obterLimitesDeslocamento = useCallback(
+    (img: HTMLImageElement, zoomAtual: number, rotacaoAtual: number) => {
+      const natW = img.naturalWidth || img.width || 1;
+      const natH = img.naturalHeight || img.height || 1;
+      const trocouEixos = Math.abs(rotacaoAtual % 180) === 90;
+      const imgW = trocouEixos ? natH : natW;
+      const imgH = trocouEixos ? natW : natH;
+      const escalaBase = Math.max(
+        TAMANHO_VIEWPORT_PX / imgW,
+        TAMANHO_VIEWPORT_PX / imgH
+      );
+      const larguraRenderizada = imgW * escalaBase * zoomAtual;
+      const alturaRenderizada = imgH * escalaBase * zoomAtual;
+      const maxX = Math.max(
+        0,
+        (larguraRenderizada - TAMANHO_VIEWPORT_PX) / 2
+      );
+      const maxY = Math.max(
+        0,
+        (alturaRenderizada - TAMANHO_VIEWPORT_PX) / 2
+      );
+      return { maxX, maxY, natW, natH, imgW, imgH };
+    },
+    []
+  );
+
   const desenharNoCanvas = useCallback(
     (
       canvas: HTMLCanvasElement,
@@ -81,21 +107,29 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      canvas.width = tamanhoAlvo;
+      canvas.height = tamanhoAlvo;
+
       ctx.clearRect(0, 0, tamanhoAlvo, tamanhoAlvo);
-      ctx.fillStyle = '#111827';
+      ctx.fillStyle = exibirGradeAuxiliar ? '#111827' : '#FFFFFF';
       ctx.fillRect(0, 0, tamanhoAlvo, tamanhoAlvo);
 
-      const radianos = (rotacao * Math.PI) / 180;
-      const trocouEixos = Math.abs(rotacao % 180) === 90;
-      const imgW = trocouEixos ? imagemCarregada.height : imagemCarregada.width;
-      const imgH = trocouEixos ? imagemCarregada.width : imagemCarregada.height;
+      const { maxX, maxY, natW, natH, imgW, imgH } = obterLimitesDeslocamento(
+        imagemCarregada,
+        zoom,
+        rotacao
+      );
 
+      const offsetClampedX = Math.max(-maxX, Math.min(maxX, offset.x));
+      const offsetClampedY = Math.max(-maxY, Math.min(maxY, offset.y));
+
+      const radianos = (rotacao * Math.PI) / 180;
       const escalaBase = Math.max(tamanhoAlvo / imgW, tamanhoAlvo / imgH);
       const escalaFinal = escalaBase * zoom;
 
       const fatorProporcao = tamanhoAlvo / TAMANHO_VIEWPORT_PX;
-      const deslocamentoX = offset.x * fatorProporcao;
-      const deslocamentoY = offset.y * fatorProporcao;
+      const deslocamentoX = offsetClampedX * fatorProporcao;
+      const deslocamentoY = offsetClampedY * fatorProporcao;
 
       ctx.save();
       ctx.imageSmoothingEnabled = true;
@@ -106,11 +140,7 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
       );
       ctx.rotate(radianos);
       ctx.scale(escalaFinal, escalaFinal);
-      ctx.drawImage(
-        imagemCarregada,
-        -imagemCarregada.width / 2,
-        -imagemCarregada.height / 2
-      );
+      ctx.drawImage(imagemCarregada, -natW / 2, -natH / 2, natW, natH);
       ctx.restore();
 
       if (exibirGradeAuxiliar) {
@@ -129,7 +159,7 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
         ctx.stroke();
       }
     },
-    [imagemCarregada, zoom, rotacao, offset]
+    [imagemCarregada, zoom, rotacao, offset, obterLimitesDeslocamento]
   );
 
   useEffect(() => {
@@ -144,16 +174,14 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
   };
 
   const moverArraste = (clientX: number, clientY: number) => {
-    if (!arrastando) return;
-    const limite = 260 * zoom;
-    const novoX = Math.max(
-      -limite,
-      Math.min(limite, clientX - inicioArraste.x)
+    if (!arrastando || !imagemCarregada) return;
+    const { maxX, maxY } = obterLimitesDeslocamento(
+      imagemCarregada,
+      zoom,
+      rotacao
     );
-    const novoY = Math.max(
-      -limite,
-      Math.min(limite, clientY - inicioArraste.y)
-    );
+    const novoX = Math.max(-maxX, Math.min(maxX, clientX - inicioArraste.x));
+    const novoY = Math.max(-maxY, Math.min(maxY, clientY - inicioArraste.y));
     setOffset({ x: novoX, y: novoY });
   };
 
@@ -163,23 +191,22 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
 
   const rotacionar = (graus: number) => {
     setRotacao((atual) => (atual + graus + 360) % 360);
+    setOffset({ x: 0, y: 0 });
   };
 
   const confirmarCorteAtual = () => {
     if (!imagemCarregada) return;
 
-    const legendaLimpa = legenda.trim();
-    if (!legendaLimpa) {
-      setErroLegenda('Digite uma breve legenda técnica para a foto antes de confirmar!');
-      return;
-    }
+    const legendaLimpa =
+      legenda.trim() ||
+      `Registro fotográfico de campo — Evidência técnica #${numeroFotoRelatorio}`;
 
     const canvasSaida = document.createElement('canvas');
     canvasSaida.width = TAMANHO_SAIDA_PX;
     canvasSaida.height = TAMANHO_SAIDA_PX;
     desenharNoCanvas(canvasSaida, TAMANHO_SAIDA_PX, false);
 
-    const base64Jpeg = canvasSaida.toDataURL('image/jpeg', 0.88);
+    const base64Jpeg = canvasSaida.toDataURL('image/jpeg', 0.92);
     onConfirmarFotoCortada(base64Jpeg, legendaLimpa);
 
     if (indiceAtual + 1 < filaArquivos.length) {
@@ -279,9 +306,23 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
             </button>
             <button
               type="button"
-              onClick={() =>
-                setZoom((z) => Math.max(0.8, +(z - 0.15).toFixed(2)))
-              }
+              onClick={() => {
+                setZoom((z) => {
+                  const nextZ = Math.max(1, +(z - 0.15).toFixed(2));
+                  if (imagemCarregada) {
+                    const { maxX, maxY } = obterLimitesDeslocamento(
+                      imagemCarregada,
+                      nextZ,
+                      rotacao
+                    );
+                    setOffset((prev) => ({
+                      x: Math.max(-maxX, Math.min(maxX, prev.x)),
+                      y: Math.max(-maxY, Math.min(maxY, prev.y)),
+                    }));
+                  }
+                  return nextZ;
+                });
+              }}
               className="px-3 py-2 text-xs font-semibold rounded-lg border border-slate-300 dark:border-slate-700 text-[#1B2A3B] dark:text-slate-200 hover:border-[#E8A020] hover:text-[#E8A020] transition-colors flex items-center gap-1.5 whitespace-nowrap shrink-0"
             >
               <ZoomOut className="w-4 h-4" />
@@ -305,11 +346,13 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
             </button>
           </div>
 
-          {/* Campo de Legenda Técnica Obrigatória */}
+          {/* Campo de Legenda Técnica */}
           <div>
             <label className="block text-xs font-bold uppercase tracking-wide text-slate-600 dark:text-slate-300 mb-1.5">
               Legenda Técnica da Foto #{numeroFotoRelatorio}{' '}
-              <span className="text-red-500">*</span>
+              <span className="text-[10px] font-normal text-slate-400">
+                (opcional — pode ser editada depois)
+              </span>
             </label>
             <input
               type="text"
@@ -318,7 +361,13 @@ export const ImageCropModal: React.FC<ImageCropModalProps> = ({
                 setLegenda(e.target.value);
                 if (erroLegenda) setErroLegenda(null);
               }}
-              placeholder="Ex: Vista da motobomba instalada e teste de vazão"
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && imagemCarregada && !erroImagem) {
+                  e.preventDefault();
+                  confirmarCorteAtual();
+                }
+              }}
+              placeholder={`Ex: Vista da motobomba instalada (padrão: Evidência técnica #${numeroFotoRelatorio})`}
               className="w-full px-3.5 py-2.5 text-sm rounded-lg border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 text-slate-900 dark:text-slate-100 focus:outline-none focus:border-[#E8A020] focus:ring-2 focus:ring-[#E8A020]/20"
             />
             {erroLegenda && (

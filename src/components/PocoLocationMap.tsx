@@ -395,7 +395,7 @@ export const PocoLocationMap: React.FC<PocoLocationMapProps> = ({
               </div>
             </div>
             <div className="text-[6.5pt] text-[#6B7A8D] border-t border-slate-100 pt-1 leading-tight">
-              Ponto plotado automaticamente via OpenStreetMap / Esri.
+              OpenStreetMap / Esri.
             </div>
           </div>
         </div>

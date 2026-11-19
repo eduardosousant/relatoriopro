@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   X,
   Zap,
@@ -17,7 +17,8 @@ import {
   EtapaStepDrawdownSEMA,
 } from '../types/relatorio';
 import {
-  TEMPOS_PADRAO_BOMBEAMENTO_GEOESTE,
+  OPCOES_ETAPA_DURACAO,
+  gerarTemposBombeamentoParaDuracao,
   TEMPOS_PADRAO_RECUPERACAO_GEOESTE,
   parseNumeroSEMA,
   fmtNumeroSEMA,
@@ -29,6 +30,7 @@ interface ModalSimuladorTesteProps {
   neAtual: string;
   ndAtual: string;
   vazaoAtual: string;
+  duracaoInicialLabel?: string;
   onAplicarSimulacao: (dados: {
     leiturasBombeamento: LeituraBombeamentoGeoeste[];
     leiturasRecuperacao: LeituraRecuperacaoGeoeste[];
@@ -45,12 +47,22 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
   neAtual,
   ndAtual,
   vazaoAtual,
+  duracaoInicialLabel = '24H',
   onAplicarSimulacao,
 }) => {
   // Parâmetros de entrada do modelo hidrogeológico
   const [neInput, setNeInput] = useState<string>(neAtual || '22,40');
   const [ndInput, setNdInput] = useState<string>(ndAtual || '64,10');
   const [vazaoInput, setVazaoInput] = useState<string>(vazaoAtual || '10,29');
+  const [duracaoLabel, setDuracaoLabel] = useState<string>(() => {
+    const norm = (duracaoInicialLabel || '24H').trim().toUpperCase();
+    return OPCOES_ETAPA_DURACAO.some(
+      (o) => o.valor !== 'PERSONALIZADO' && o.valor === norm
+    )
+      ? norm
+      : '24H';
+  });
+
   const [tempoEstabMin, setTempoEstabMin] = useState<number>(160);
   const [tipoAquifero, setTipoAquifero] = useState<
     'sedimentar' | 'fraturado' | 'livre'
@@ -60,6 +72,28 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
   const [incluirRuidoCampo, setIncluirRuidoCampo] = useState<boolean>(true);
   const [mostrarGuiaAquifero, setMostrarGuiaAquifero] = useState<boolean>(false);
 
+  useEffect(() => {
+    if (isOpen) {
+      const norm = (duracaoInicialLabel || '24H').trim().toUpperCase();
+      if (
+        OPCOES_ETAPA_DURACAO.some(
+          (o) => o.valor !== 'PERSONALIZADO' && o.valor === norm
+        )
+      ) {
+        setDuracaoLabel(norm);
+      }
+      if (neAtual && parseNumeroSEMA(neAtual) !== null) {
+        setNeInput(neAtual);
+      }
+      if (ndAtual && parseNumeroSEMA(ndAtual) !== null) {
+        setNdInput(ndAtual);
+      }
+      if (vazaoAtual && (parseNumeroSEMA(vazaoAtual) ?? 0) > 0) {
+        setVazaoInput(vazaoAtual);
+      }
+    }
+  }, [isOpen, duracaoInicialLabel, neAtual, ndAtual, vazaoAtual]);
+
   // Cálculos prévios
   const neVal = parseNumeroSEMA(neInput) ?? 22.4;
   const ndVal = parseNumeroSEMA(ndInput) ?? 64.1;
@@ -68,23 +102,51 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
   const rebaixamentoTotal = Math.max(0.1, Number((ndVal - neVal).toFixed(2)));
   const capEspecifica = qVal > 0 ? (qVal / rebaixamentoTotal).toFixed(3) : '0';
 
-  // Gerador sintético de curvas físicas Cooper-Jacob e Theis
+  const handleEstimarVazaoCoerente = () => {
+    const neN = parseNumeroSEMA(neInput);
+    const ndN = parseNumeroSEMA(ndInput);
+    const sDisp = neN !== null && ndN !== null && ndN > neN ? ndN - neN : rebaixamentoTotal;
+    // Capacidade específica típica por formação hidrogeológica (m³/h por metro de rebaixamento)
+    const fatorAquifero =
+      tipoAquifero === 'fraturado'
+        ? 0.14 / (1 + 0.005 * sDisp)
+        : tipoAquifero === 'livre'
+        ? 0.34 / (1 + 0.003 * sDisp)
+        : 0.25 / (1 + 0.004 * sDisp);
+    const qEstimada = Math.max(1.2, Number((sDisp * fatorAquifero).toFixed(2)));
+    setVazaoInput(qEstimada.toFixed(2).replace('.', ','));
+  };
+
+  // Gerador sintético de curvas físicas Cooper-Jacob e Theis (com N.D. e Q coerentes no tempo)
   const simulacao = useMemo(() => {
     if (ndVal <= neVal || qVal <= 0) {
       return null;
     }
 
+    const opcaoDuracao =
+      OPCOES_ETAPA_DURACAO.find(
+        (o) => o.valor !== 'PERSONALIZADO' && o.valor === duracaoLabel
+      ) || OPCOES_ETAPA_DURACAO[2];
+    const duracaoMinutos = opcaoDuracao.minutos || 1440;
+    const temposSimulados = gerarTemposBombeamentoParaDuracao(duracaoMinutos);
+
     const sMax = rebaixamentoTotal;
     const tEstab = Math.max(30, tempoEstabMin);
 
-    // 1. Leituras de Bombeamento (36 pontos padrão ABNT)
-    const leiturasBomb: LeituraBombeamentoGeoeste[] =
-      TEMPOS_PADRAO_BOMBEAMENTO_GEOESTE.map((t) => {
+    let qInicialSim = qVal;
+    let qFinalSim = qVal;
+    let somaQ = 0;
+
+    // 1. Leituras de Bombeamento compatíveis com a duração selecionada
+    const leiturasBomb: LeituraBombeamentoGeoeste[] = temposSimulados.map(
+      (t, idx) => {
         let sT: number;
+        let qT: number;
 
         if (t >= tEstab) {
-          // Estabilizado
+          // Estabilizado em regime permanente (vazão constante NBR 12244)
           sT = sMax;
+          qT = qVal;
         } else {
           // Progressão logarítmica Cooper-Jacob
           const x = Math.log10(t) / Math.log10(tEstab);
@@ -99,32 +161,61 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
             sT = sMax * (0.06 + 0.94 * Math.pow(x, 1.2));
           }
 
-          // Se ativado pequeno ruído de precisão de fita de nível (±0,03m) para realismo estético
-          if (incluirRuidoCampo && t > 5 && t < tEstab) {
-            const pseudoRand = ((Math.sin(t * 12.9898) * 43758.5453) % 1) - 0.5;
-            sT += pseudoRand * 0.05;
+          // Simulação hidrodinâmica coerente de Q(t):
+          // No início do bombeamento (menor altura manométrica / ajuste inicial do registro),
+          // a vazão parte ~3,5% a 4% acima do valor nominal e converge suavemente até estabilizar em qVal.
+          const progressoRebaix = Math.min(1, Math.max(0, sT / sMax));
+          const decaimentoValvula = Math.exp(-t / 15);
+          const sobreVazaoInicial =
+            qVal * 0.04 * (1 - 0.55 * progressoRebaix) * decaimentoValvula;
+
+          let ruidoQ = 0;
+          if (incluirRuidoCampo && t > 1) {
+            const pseudoRandQ =
+              ((Math.sin(t * 27.1357 + qVal) * 43758.5453) % 1) - 0.5;
+            const atenuacao = Math.max(0.15, 1 - t / tEstab);
+            ruidoQ = pseudoRandQ * qVal * 0.014 * atenuacao;
+          }
+
+          qT = Math.max(qVal * 0.96, qVal + sobreVazaoInicial + ruidoQ);
+
+          // Pequeno acoplamento hidrodinâmico de s(t) com a micro-variação de Q(t) + leitura de fita (±0,03m)
+          if (incluirRuidoCampo && t > 5) {
+            const pseudoRandND =
+              ((Math.sin(t * 12.9898) * 43758.5453) % 1) - 0.5;
+            sT += pseudoRandND * 0.05;
           }
         }
 
         sT = Math.min(sMax, Math.max(0.1, sT));
         const ndT = Number((neVal + sT).toFixed(2));
+        const qTArred = Number(qT.toFixed(3));
+
+        if (idx === 0) qInicialSim = qTArred;
+        qFinalSim = qTArred;
+        somaQ += qTArred;
 
         let obs = 'Água límpida';
-        if (t === 1) obs = 'Início do ensaio a vazão constante';
+        if (t === 1) obs = 'Início do ensaio — ajuste inicial de registro';
         else if (t === 10) obs = 'Ciclo log t=10 min';
         else if (t === 100) obs = 'Ciclo log t=100 min';
-        else if (t === tEstab) obs = 'Estabilização de N.D.';
-        else if (t >= tEstab) obs = 'Nível Estabilizado';
+        else if (t === tEstab) obs = 'Estabilização de N.D. e Vazão';
+        else if (t === duracaoMinutos) obs = `Estabilizado (${duracaoLabel})`;
+        else if (t > tEstab) obs = 'Nível e Vazão Estabilizados';
 
         return {
           id: `bomb-sim-${t}`,
           tMin: t,
           ndM: ndT.toFixed(2).replace('.', ','),
-          vazaoM3h: qVal.toFixed(3).replace('.', ','),
+          vazaoM3h: qTArred.toFixed(3).replace('.', ','),
           areiaPpm: '0',
           observacoes: obs,
         };
-      });
+      }
+    );
+
+    const qMediaSim =
+      leiturasBomb.length > 0 ? somaQ / leiturasBomb.length : qVal;
 
     // 2. Leituras de Recuperação (18 pontos padrão)
     const taxaRecupFrac = Math.min(0.98, Math.max(0.3, taxaRecuperacaoFinal / 100));
@@ -137,7 +228,8 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
 
         let obs = 'Ascensão contínua';
         if (t === 1) obs = 'Desligamento do bombeamento';
-        else if (t === 35) obs = `Recuperação final: ${(taxaRecupFrac * 100).toFixed(1).replace('.', ',')}%`;
+        else if (t === 35)
+          obs = `Recuperação final: ${(taxaRecupFrac * 100).toFixed(1).replace('.', ',')}%`;
 
         return {
           id: `rec-sim-${t}`,
@@ -184,7 +276,7 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
         duracaoMinutos: 240,
         vazaoM3h: q3.toFixed(2).replace('.', ','),
         nivelDinamicoM: (neVal + s3).toFixed(2).replace('.', ','),
-        observacao: '3ª Etapa Nominal Estabilizada — Vazão Recomendada (24h)',
+        observacao: `3ª Etapa Nominal Estabilizada — Vazão Recomendada (${duracaoLabel})`,
       },
     ];
 
@@ -197,12 +289,16 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
       ndRecupFinal,
       coefB: B,
       coefC: C,
+      qInicialSim,
+      qFinalSim,
+      qMediaSim,
     };
   }, [
     neVal,
     ndVal,
     qVal,
     rebaixamentoTotal,
+    duracaoLabel,
     tempoEstabMin,
     tipoAquifero,
     eficienciaDesejada,
@@ -218,7 +314,7 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
       leiturasBombeamento: simulacao.leiturasBomb,
       leiturasRecuperacao: simulacao.leiturasRec,
       etapas: simulacao.etapas,
-      etapaLabel: '24H',
+      etapaLabel: duracaoLabel,
       vazaoRecomendada: vazaoInput,
       nivelRecuperacaoFinal: simulacao.ndRecupFinal,
     });
@@ -242,7 +338,7 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
                 </span>
               </h3>
               <p className="text-xs text-slate-300">
-                Gera curva contínua completa de 36 leituras, recuperação residual e 3 degraus escalonados
+                Gera curva contínua completa de N.D. e Vazão Q (m³/h), recuperação residual e 3 degraus escalonados
               </p>
             </div>
           </div>
@@ -265,7 +361,7 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
                 Como funciona a simulação hidrogeológica?
               </p>
               <p className="text-[11.5px] leading-relaxed text-amber-800/90 dark:text-amber-300/90">
-                A partir apenas dos parâmetros essenciais conhecidos do poço (Nível Estático, Nível Dinâmico Estabilizado e Vazão de Teste), o modelo calcula a resposta hidrodinâmica clássica de Cooper-Jacob / Theis (ABNT NBR 12212/12244), produzindo todas as 36 leituras do teste contínuo, as 18 leituras de recuperação e os 3 degraus de perda de carga compatíveis.
+                A partir de NE, ND Estabilizado e Vazão Nominal (que você também pode estimar pelo rebaixamento), o modelo calcula a curva hidrodinâmica Cooper-Jacob / Theis (ABNT NBR 12212/12244), simulando tanto a progressão do <strong>N.D. (m)</strong> quanto a estabilização realística da <strong>Vazão Q (m³/h)</strong> desde o ajuste inicial do registro até o regime permanente, além da recuperação e dos 3 degraus de perda de carga.
               </p>
             </div>
           </div>
@@ -315,9 +411,20 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
             </div>
 
             <div className="p-3 rounded-xl bg-[#F7F9FC] dark:bg-slate-950 border border-[#DDE3EC] dark:border-slate-800">
-              <label className="block text-[10.5px] font-bold uppercase text-[#6B7A8D] mb-1">
-                Vazão do Teste (Q)
-              </label>
+              <div className="flex items-center justify-between gap-1 mb-1">
+                <label className="text-[10.5px] font-bold uppercase text-[#6B7A8D]">
+                  Vazão do Teste (Q)
+                </label>
+                <button
+                  type="button"
+                  onClick={handleEstimarVazaoCoerente}
+                  className="text-[10px] font-bold text-emerald-700 dark:text-emerald-400 hover:underline flex items-center gap-0.5 cursor-pointer"
+                  title="Calcular vazão nominal coerente com NE, ND e tipo de aquífero"
+                >
+                  <Sparkles className="w-2.5 h-2.5" />
+                  <span>Estimar Q</span>
+                </button>
+              </div>
               <div className="relative">
                 <input
                   type="text"
@@ -331,7 +438,7 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
                 </span>
               </div>
               <span className="text-[10px] text-slate-500 mt-1 block">
-                Vazão pretendida de outorga
+                Vazão nominal estabilizada (com transiente inicial simulado)
               </span>
             </div>
           </div>
@@ -386,6 +493,26 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
                   </p>
                 </div>
               )}
+            </div>
+
+            <div className="sm:col-span-2">
+              <label className="block text-[10.5px] font-bold uppercase text-[#6B7A8D] mb-1.5 flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5 text-[#E8A020]" />
+                Duração Total do Ensaio (Etapa / Duração)
+              </label>
+              <select
+                value={duracaoLabel}
+                onChange={(e) => setDuracaoLabel(e.target.value)}
+                className="w-full px-3 py-2 text-xs font-semibold rounded-lg border border-[#E8A020]/70 bg-white dark:bg-slate-900 font-mono"
+              >
+                {OPCOES_ETAPA_DURACAO.filter((o) => o.valor !== 'PERSONALIZADO').map(
+                  (op) => (
+                    <option key={op.valor} value={op.valor}>
+                      {op.rotulo}
+                    </option>
+                  )
+                )}
+              </select>
             </div>
 
             <div>
@@ -459,10 +586,10 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
           <div className="flex items-center justify-between p-3 rounded-lg border border-[#DDE3EC] dark:border-slate-800 bg-[#F7F9FC] dark:bg-slate-950">
             <div>
               <span className="text-xs font-semibold block">
-                Aplicar micro-variação natural de leitura de fita de nível (±0,03m)
+                Aplicar micro-variação natural de campo (N.D. ±0,03 m e Vazão Q ±0,7% até estabilização)
               </span>
               <span className="text-[10.5px] text-[#6B7A8D]">
-                Gera textura realística idêntica à leitura manual de campo em poço
+                Gera textura realística idêntica às leituras de fita de nível e hidrômetro em campo
               </span>
             </div>
             <input
@@ -486,10 +613,16 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono text-center">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 font-mono text-center">
                 <div className="p-2 rounded bg-slate-800/80 border border-slate-700/50">
                   <div className="text-[10px] uppercase text-slate-400">Rebaixamento (s)</div>
                   <div className="text-sm font-bold text-amber-400">{rebaixamentoTotal.toFixed(2).replace('.', ',')} m</div>
+                </div>
+                <div className="p-2 rounded bg-slate-800/80 border border-slate-700/50">
+                  <div className="text-[10px] uppercase text-slate-400">Vazão Simulada (Q)</div>
+                  <div className="text-[11.5px] font-bold text-emerald-300 mt-0.5">
+                    {fmtNumeroSEMA(simulacao.qInicialSim, 2)} → {fmtNumeroSEMA(simulacao.qFinalSim, 2)} m³/h
+                  </div>
                 </div>
                 <div className="p-2 rounded bg-slate-800/80 border border-slate-700/50">
                   <div className="text-[10px] uppercase text-slate-400">Cap. Específica (Q/s)</div>
@@ -499,7 +632,7 @@ export const ModalSimuladorTeste: React.FC<ModalSimuladorTesteProps> = ({
                   <div className="text-[10px] uppercase text-slate-400">Eficiência (E)</div>
                   <div className="text-sm font-bold text-sky-400">{eficienciaDesejada}%</div>
                 </div>
-                <div className="p-2 rounded bg-slate-800/80 border border-slate-700/50">
+                <div className="p-2 rounded bg-slate-800/80 border border-slate-700/50 col-span-2 sm:col-span-1">
                   <div className="text-[10px] uppercase text-slate-400">Recup. 35 min</div>
                   <div className="text-sm font-bold text-indigo-300">{simulacao.ndRecupFinal} m</div>
                 </div>

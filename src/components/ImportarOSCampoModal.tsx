@@ -29,11 +29,17 @@ export interface DadosExtraidosOSCampo {
   pocoTag?: string;
   profundidadeTotal?: string;
   diametroRevestimento?: string;
+  nivelEstaticoInicial?: string;
   nivelEstatico?: string;
+  nivelDinamicoInicial?: string;
   nivelDinamico?: string;
+  vazaoInicial?: string;
   vazaoTeste?: string;
+  crivoInicial?: string;
   crivo?: string;
+  eletrodoSuperiorInicial?: string;
   eletrodoSuperior?: string;
+  eletrodoInferiorInicial?: string;
   eletrodoInferior?: string;
   tuboEdutor?: string;
   especificacaoBomba?: string;
@@ -79,11 +85,17 @@ const DADOS_EXEMPLOS_PRE_EXTRAIDOS: Record<string, DadosExtraidosOSCampo> = {
     pocoTag: 'PT-03',
     profundidadeTotal: '200,00 m',
     diametroRevestimento: '6"',
+    nivelEstaticoInicial: '36,20 m',
     nivelEstatico: '36,20 m',
+    nivelDinamicoInicial: '116,80 m',
     nivelDinamico: '116,80 m',
+    vazaoInicial: '2,60 m³/h (2.600 L/h)',
     vazaoTeste: '2,60 m³/h (2.600 L/h)',
+    crivoInicial: '180,00 m',
     crivo: '180,00 m',
+    eletrodoSuperiorInicial: 'Cabo elét. 3x10 mm²',
     eletrodoSuperior: 'Cabo elét. 3x10 mm²',
+    eletrodoInferiorInicial: 'Cabo elét. 3x6 mm²',
     eletrodoInferior: 'Cabo elét. 3x6 mm²',
     tuboEdutor: 'CRI 1 1/2"',
     especificacaoBomba: 'Motobomba Submersa Ebara',
@@ -162,11 +174,17 @@ const DADOS_EXEMPLOS_PRE_EXTRAIDOS: Record<string, DadosExtraidosOSCampo> = {
     pocoTag: 'PT-01 (SONORA)',
     profundidadeTotal: 'Avaliação em campo',
     diametroRevestimento: '6"',
+    nivelEstaticoInicial: 'Avaliação em campo',
     nivelEstatico: 'Avaliação em campo',
+    nivelDinamicoInicial: 'Avaliação em campo',
     nivelDinamico: 'Avaliação em campo',
-    vazaoTeste: '8,00 m³/h (8.000 L/h — Avaliação)',
+    vazaoInicial: '4,00 m³/h (4.000 L/h — Impresso)',
+    vazaoTeste: '8,00 m³/h (8.000 L/h — Manuscrito)',
+    crivoInicial: 'Avaliação em campo',
     crivo: 'Avaliação em campo',
+    eletrodoSuperiorInicial: '—',
     eletrodoSuperior: '—',
+    eletrodoInferiorInicial: '—',
     eletrodoInferior: '—',
     tuboEdutor: 'Geon DN 1 1/2"',
     especificacaoBomba: 'Conjunto Motobomba Submersa Existente (Avaliação)',
@@ -254,11 +272,17 @@ const DADOS_EXEMPLOS_PRE_EXTRAIDOS: Record<string, DadosExtraidosOSCampo> = {
     pocoTag: 'PT-01 (PF CACHIMBO)',
     profundidadeTotal: '13,50 m (Frente) / ND 30,00 m (Carimbo)',
     diametroRevestimento: '4 Polegadas (Confirmado no carimbo de campo)',
+    nivelEstaticoInicial: '4,50 m (Frente O.S.) / 8,00 m (Antes)',
     nivelEstatico: '8,00 m',
+    nivelDinamicoInicial: '6,40 m (Frente O.S.) / 30,00 m (Antes)',
     nivelDinamico: '30,00 m',
+    vazaoInicial: '4,00 m³/h (4.000 L/h — Frente) / 4,10 m³/h (Antes)',
     vazaoTeste: '4,10 m³/h (4.100 L/h)',
+    crivoInicial: '12,00 m',
     crivo: '12,00 m',
+    eletrodoSuperiorInicial: '3,00 m',
     eletrodoSuperior: '3,00 m',
+    eletrodoInferiorInicial: '11,50 m',
     eletrodoInferior: '11,50 m',
     tuboEdutor: '1 1/4" Galvanizado',
     especificacaoBomba: 'ESUB 4/9 (Carimbo de campo) / 4BPS3F-11 1.5 HP 254V MON.',
@@ -454,6 +478,36 @@ export const ImportarOSCampoModal: React.FC<ImportarOSCampoModalProps> = ({
     }
   };
 
+  const comprimirImagemParaExtracao = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('Falha ao ler imagem.'));
+      reader.onload = () => {
+        const dataUrl = String(reader.result || '');
+        const img = new Image();
+        img.onerror = () => resolve(dataUrl);
+        img.onload = () => {
+          const maxDim = 2000;
+          const scale = Math.min(1, maxDim / Math.max(img.width, img.height));
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.max(1, Math.round(img.width * scale));
+          canvas.height = Math.max(1, Math.round(img.height * scale));
+          const ctx = canvas.getContext('2d');
+          if (!ctx) {
+            resolve(dataUrl);
+            return;
+          }
+          ctx.fillStyle = '#FFFFFF';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          resolve(canvas.toDataURL('image/jpeg', 0.85));
+        };
+        img.src = dataUrl;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
   const handleSelecionarArquivoUsuario = async (
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
@@ -477,14 +531,15 @@ export const ImportarOSCampoModal: React.FC<ImportarOSCampoModalProps> = ({
       return;
     }
 
-    const mimeType =
-      file.type ||
-      (file.name.toLowerCase().endsWith('.pdf')
-        ? 'application/pdf'
-        : 'image/jpeg');
+    const ehPdf =
+      file.type === 'application/pdf' ||
+      file.name.toLowerCase().endsWith('.pdf');
+    const mimeType = ehPdf ? 'application/pdf' : 'image/jpeg';
 
     try {
-      const base64 = await converterBlobParaBase64(file);
+      const base64 = ehPdf
+        ? await converterBlobParaBase64(file)
+        : await comprimirImagemParaExtracao(file);
       await enviarParaExtracao(base64, mimeType, file.name);
     } catch {
       showToast('Erro ao carregar o arquivo selecionado.', 'error');
@@ -747,26 +802,63 @@ export const ImportarOSCampoModal: React.FC<ImportarOSCampoModalProps> = ({
                       <span className="font-bold">{dadosExtraidos.diametroRevestimento || '—'}</span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-[#6B7A8D] block">Vazão Medida</span>
+                      <span className="text-[10px] text-[#6B7A8D] block">
+                        Vazão (Antes → Depois)
+                      </span>
                       <span className="font-bold text-emerald-700 dark:text-emerald-400">
-                        {dadosExtraidos.vazaoTeste || '—'}
+                        {dadosExtraidos.vazaoInicial &&
+                        dadosExtraidos.vazaoInicial !== dadosExtraidos.vazaoTeste
+                          ? `${dadosExtraidos.vazaoInicial} → ${dadosExtraidos.vazaoTeste || '—'}`
+                          : dadosExtraidos.vazaoTeste || '—'}
                       </span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-[#6B7A8D] block">Nível Estático (NE)</span>
-                      <span className="font-bold">{dadosExtraidos.nivelEstatico || '—'}</span>
+                      <span className="text-[10px] text-[#6B7A8D] block">
+                        Nível Estático NE (Antes → Depois)
+                      </span>
+                      <span className="font-bold">
+                        {dadosExtraidos.nivelEstaticoInicial &&
+                        dadosExtraidos.nivelEstaticoInicial !==
+                          dadosExtraidos.nivelEstatico
+                          ? `${dadosExtraidos.nivelEstaticoInicial} → ${dadosExtraidos.nivelEstatico || '—'}`
+                          : dadosExtraidos.nivelEstatico || '—'}
+                      </span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-[#6B7A8D] block">Nível Dinâmico (ND)</span>
-                      <span className="font-bold">{dadosExtraidos.nivelDinamico || '—'}</span>
+                      <span className="text-[10px] text-[#6B7A8D] block">
+                        Nível Dinâmico ND (Antes → Depois)
+                      </span>
+                      <span className="font-bold">
+                        {dadosExtraidos.nivelDinamicoInicial &&
+                        dadosExtraidos.nivelDinamicoInicial !==
+                          dadosExtraidos.nivelDinamico
+                          ? `${dadosExtraidos.nivelDinamicoInicial} → ${dadosExtraidos.nivelDinamico || '—'}`
+                          : dadosExtraidos.nivelDinamico || '—'}
+                      </span>
                     </div>
                     <div>
-                      <span className="text-[10px] text-[#6B7A8D] block">Crivo / Filtro</span>
-                      <span className="font-semibold">{dadosExtraidos.crivo || '—'}</span>
+                      <span className="text-[10px] text-[#6B7A8D] block">
+                        Crivo (Antes → Depois)
+                      </span>
+                      <span className="font-semibold">
+                        {dadosExtraidos.crivoInicial &&
+                        dadosExtraidos.crivoInicial !== dadosExtraidos.crivo
+                          ? `${dadosExtraidos.crivoInicial} → ${dadosExtraidos.crivo || '—'}`
+                          : dadosExtraidos.crivo || '—'}
+                      </span>
                     </div>
                     <div>
                       <span className="text-[10px] text-[#6B7A8D] block">Tubo Edutor / Galv.</span>
                       <span className="font-semibold">{dadosExtraidos.tuboEdutor || '—'}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-[#6B7A8D] block">
+                        Eletrodos ES / EI (Antes → Depois)
+                      </span>
+                      <span className="font-semibold">
+                        ES: {dadosExtraidos.eletrodoSuperior || '—'} | EI:{' '}
+                        {dadosExtraidos.eletrodoInferior || '—'}
+                      </span>
                     </div>
                     <div className="col-span-2">
                       <span className="text-[10px] text-[#6B7A8D] block">Motobomba</span>

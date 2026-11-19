@@ -80,8 +80,17 @@ export interface EtapaStepDrawdownSEMA {
  */
 export interface DadosTesteVazaoSEMA {
   ativo: boolean;
-  tipoEnsaio: 'Escalonado (Step-Drawdown)' | 'Contínuo 24h + Escalonado' | 'Contínuo 24h a Vazão Constante';
-  etapaLabel?: string; // Ex: "24H"
+  tipoEnsaio:
+    | 'Escalonado (Step-Drawdown)'
+    | 'Contínuo 24h + Escalonado'
+    | 'Contínuo 24h a Vazão Constante'
+    | 'Contínuo 6h a Vazão Constante'
+    | 'Contínuo 12h a Vazão Constante'
+    | 'Contínuo 36h a Vazão Constante'
+    | 'Contínuo 48h a Vazão Constante'
+    | 'Contínuo 72h a Vazão Constante'
+    | 'Contínuo Personalizado a Vazão Constante';
+  etapaLabel?: string; // Ex: "12H", "24H", "48H", "72H"
   referenciaMedidasM?: string; // Ex: "0,00"
   responsavelTecnicoNome?: string; // Ex: "José Roberto Ribeiro"
   responsavelTecnicoCPF?: string;
@@ -106,22 +115,77 @@ export interface DadosTesteVazaoSEMA {
   etapas: EtapaStepDrawdownSEMA[];
 }
 
+export interface ModeloCatalogoBomba {
+  id: string;
+  fabricante: string; // Ex: Ebara, Leão, Schneider, CRI
+  modelo: string; // Ex: 4BHS-15, 4R5PB-16, 4BPS3F-11
+  diametroMinPocoPol: number; // Ex: 4 ou 6 (polegadas)
+  potenciaCV: number; // Ex: 1.5, 3.0, 5.0, 7.5
+  estagios: number; // Ex: 11, 15, 18
+  vazaoMinM3h: number; // Vazão mínima da curva (m³/h)
+  vazaoNominalM3h: number; // Vazão de melhor eficiência BEP (m³/h)
+  vazaoMaxM3h: number; // Vazão máxima da curva (m³/h)
+  amtMinMca: number; // AMT na vazão máxima (m.c.a.)
+  amtNominalMca: number; // AMT na vazão nominal BEP (m.c.a.)
+  amtMaxMca: number; // AMT na vazão mínima (m.c.a.)
+  bocalRecalquePol: string; // Ex: 1.1/2", 2"
+  rendimentoNominalPercent?: number; // Ex: 62
+  correnteNominal220MonoA?: number;
+  correnteNominal220TriA?: number;
+  correnteNominal380TriA?: number;
+  isCustom?: boolean;
+}
+
+export interface DadosDimensionamentoBomba {
+  ativo: boolean; // Se verdadeiro, exibe o quadro de dimensionamento no Relatório e PDF
+  diametroEdutorPol: string; // Ex: '1.1/4"', '1.1/2"', '2"', '2.1/2"', '3"'
+  materialEdutor:
+    | 'Galvanizado (C=120)'
+    | 'PVC Geomecânico (C=140)'
+    | 'PEAD (C=140)'
+    | 'Aço Inox (C=140)';
+  desnivelExternoM: string; // Ex: '15,00' (Cota boca do poço -> topo reservatório)
+  distanciaAdutoraM: string; // Ex: '80,00' (Extensão horizontal da adutora externa)
+  diametroAdutoraMm: string; // Ex: '50' (Diâmetro interno/nominal da adutora em mm)
+  materialAdutora: 'PEAD / PVC (C=140)' | 'Aço Galvanizado (C=120)';
+  pressaoResidualMca: string; // Ex: '3,00' (Pressão residual na chegada em m.c.a.)
+  perdasLocalizadasPercent: string; // Ex: '8' (% de perdas singulares no cavalete/conexões)
+  rendimentoBombaPercent: string; // Ex: '58' (Rendimento global estimado η em %)
+  tensaoAlimentacao:
+    | '220V Monofásico'
+    | '254V Monofásico'
+    | '220V Trifásico'
+    | '380V Trifásico'
+    | '440V Trifásico';
+  distanciaQuadroBocaM: string; // Ex: '12,00' (Distância do painel até a boca do poço)
+  quedaTensaoMaxPercent: string; // Ex: '3,5' (Limite máximo de queda de tensão ΔV%)
+  modeloSelecionadoId?: string;
+  observacoesDimensionamento?: string;
+}
+
 export interface DadosPocoArtesiano {
   incluirNoRelatorio: boolean;
   pocoId: string; // TAG ex: PT01
   profundidadeTotal: string; // ex: 160,00 m
   diametroRevestimento: string; // ex: 6" (152,4 mm) Aço Carbono Schedule 40
-  crivo: string; // ex: [DADO A PREENCHER EM CAMPO — Topo do filtro abaixo de 84,00 m]
+  crivoInicial?: string; // Antes da manutenção (frente da O.S. / carimbo Antes)
+  crivo: string; // Depois da manutenção / Posição final do crivo
   profundidadeBomba?: string; // ex: 84,00 m (Submergência: 19,90 m acima do ND de 64,10 m)
+  aquiferoLitologia?: string; // ex: Sistema Aquífero Parecis (detectado via ANA/SNIRH ou cadastro)
   perfilLitologico?: string; // ex: 0,00 a 24,00 m: Sedimentos Cenozoicos | 24,00 a 160,00 m: Basalto fraturado (Sistema Aquífero Serra Geral / Guarani)
   desenhoConstrutivo?: string; // Seção 4: Descrição de casing, crivo, filtro, cimentação sanitária 0-24m, laje
   parecerHidrogeologico?: string; // Seção 6: Parecer Hidrogeológico e Vazão Recomendada
-  nivelEstatico: string; // ex: 22,40 m
-  nivelDinamico: string; // ex: 64,10 m
-  vazaoTeste: string; // ex: 10,29 m³/h
+  nivelEstaticoInicial?: string; // Antes da manutenção (NE Inicial)
+  nivelEstatico: string; // Depois da manutenção (NE Final)
+  nivelDinamicoInicial?: string; // Antes da manutenção (ND Inicial)
+  nivelDinamico: string; // Depois da manutenção (ND Final)
+  vazaoInicial?: string; // Antes da manutenção (Vazão Inicial)
+  vazaoTeste: string; // Depois da manutenção (Vazão Final / Operação)
   tuboEdutor: string; // ex: [DADO A PREENCHER EM CAMPO]
-  eletrodoSuperior: string; // ex: [DADO A PREENCHER EM CAMPO]
-  eletrodoInferior: string; // ex: [DADO A PREENCHER EM CAMPO]
+  eletrodoSuperiorInicial?: string; // Antes da manutenção (ES Inicial)
+  eletrodoSuperior: string; // Depois da manutenção (ES Final)
+  eletrodoInferiorInicial?: string; // Antes da manutenção (EI Inicial)
+  eletrodoInferior: string; // Depois da manutenção (EI Final)
   coordenadasUTM: string; // ex: [DADO A PREENCHER EM CAMPO]
   coordenadasGeograficas?: string; // ex: LAT -21.1767 LON -47.8208
   especificacaoBomba: string; // ex: Ebara 4BHS-15 7,5 CV Trifásica 380V
@@ -129,6 +193,22 @@ export interface DadosPocoArtesiano {
   painelEletrico: string; // ex: [DADO A PREENCHER EM CAMPO]
   painelEstado: 'Usado' | 'Novo';
   testeVazaoSEMA?: DadosTesteVazaoSEMA;
+  dimensionamentoBomba?: DadosDimensionamentoBomba;
+}
+
+export interface CadastroCliente {
+  uuid: string;
+  razaoSocial: string;
+  nomeFantasia?: string;
+  cnpjCpf: string;
+  enderecoSede: string;
+  cidadeUF: string;
+  contatoPrincipal: string;
+  telefone: string;
+  email?: string;
+  observacoes?: string;
+  criadoEm: number;
+  atualizadoEm: number;
 }
 
 /**
@@ -137,6 +217,7 @@ export interface DadosPocoArtesiano {
  */
 export interface CadastroPoco {
   uuid: string;
+  clienteUuid?: string; // Vínculo com o CadastroCliente
   tag: string; // Ex: PT01, PT02 - Sede
   nomeIdentificacao: string; // Ex: Poço Principal Irrigação Pivô 01
   cliente: string;
@@ -218,6 +299,7 @@ export interface SecoesVisiveisRelatorio {
 export interface RelatorioTecnico {
   id?: number;
   uuid: string;
+  clienteUuid?: string; // Vínculo com o CadastroCliente
   pocoUuid?: string; // Vínculo com o CadastroPoco
   status: 'rascunho' | 'finalizado' | 'exportado';
   cabecalho: DadosCabecalho;
@@ -246,7 +328,9 @@ export interface TemplateServico {
 }
 
 export type SecaoNavegacao =
+  | 'cadastro_clientes'
   | 'cadastro_pocos'
+  | 'conversor_lote'
   | 'identificacao'
   | 'poco'
   | 'servicos'
